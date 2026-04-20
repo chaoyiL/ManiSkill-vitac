@@ -34,7 +34,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from anytouch.model.tactile_mae_jax import (
+from policy.anytouch.model.tactile_mae_jax import (
     Module,
     TactileMAEConfig,
     _Module,
@@ -126,7 +126,7 @@ def load_anytouch_params(
     params : dict
         Nested dict usable as ``module.apply({"params": params}, ...)``.
     """
-    from anytouch.weight_converter import (
+    from policy.anytouch.weight_converter import (
         infer_config_from_checkpoint,
         load_params_from_pytorch,
     )

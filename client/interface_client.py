@@ -1,11 +1,49 @@
 from __future__ import annotations
 
+import functools
 import time
 from typing import Any
 
-from openpi_client import msgpack_numpy
+import msgpack
+import numpy as np
 from websockets.exceptions import InvalidStatus
 from websockets.sync.client import ClientConnection, connect
+
+
+def _pack_array(obj: Any) -> Any:
+    if isinstance(obj, (np.ndarray, np.generic)) and obj.dtype.kind in ("V", "O", "c"):
+        raise ValueError(f"Unsupported dtype: {obj.dtype}")
+
+    if isinstance(obj, np.ndarray):
+        return {
+            b"__ndarray__": True,
+            b"data": obj.tobytes(),
+            b"dtype": obj.dtype.str,
+            b"shape": obj.shape,
+        }
+
+    if isinstance(obj, np.generic):
+        return {
+            b"__npgeneric__": True,
+            b"data": obj.item(),
+            b"dtype": obj.dtype.str,
+        }
+
+    return obj
+
+
+def _unpack_array(obj: dict[bytes, Any]) -> Any:
+    if b"__ndarray__" in obj:
+        return np.ndarray(buffer=obj[b"data"], dtype=np.dtype(obj[b"dtype"]), shape=obj[b"shape"])
+
+    if b"__npgeneric__" in obj:
+        return np.dtype(obj[b"dtype"]).type(obj[b"data"])
+
+    return obj
+
+
+_Packer = functools.partial(msgpack.Packer, default=_pack_array)
+_unpackb = functools.partial(msgpack.unpackb, object_hook=_unpack_array)
 
 
 class InterfaceClient:
@@ -16,7 +54,7 @@ class InterfaceClient:
         self.robot_port = int(port)
         self._uri = f"ws://{self.robot_ip}:{self.robot_port}"
         self._token = None if token is None else str(token)
-        self._packer = msgpack_numpy.Packer()
+        self._packer = _Packer()
         self._ws = self._connect()
         self._expect_hello()
 
@@ -58,7 +96,7 @@ class InterfaceClient:
         raw_message = self._ws.recv(timeout=timeout)
         if isinstance(raw_message, str):
             raise RuntimeError("Robot bridge expects binary websocket frames.")
-        return msgpack_numpy.unpackb(raw_message)
+        return _unpackb(raw_message)
 
     def send_config(self, config: dict[str, Any]) -> None:
         self._send_message(

@@ -16,8 +16,6 @@ import tyro
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.tokenizer as _tokenizer
-import openpi.policies.vb_single_arm as vb_single_arm
-import openpi.policies.vb_single_vitac as vb_single_vitac
 import openpi.policies.vb_policy_vis as vb_policy_vis
 import openpi.policies.vb_policy_vitac as vb_policy_vitac
 import openpi.shared.download as _download
@@ -240,12 +238,6 @@ class TrainConfig:
     # A weight loader can optionally load (possibly partial) weights from disk after the model is initialized.
     weight_loader: weight_loaders.WeightLoader = dataclasses.field(default_factory=weight_loaders.NoOpWeightLoader)
 
-    # Optional path to a PyTorch checkpoint to load weights from.
-    pytorch_weight_path: str | None = None
-
-    # Precision for PyTorch training.
-    pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
-
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
     ema_decay: float | None = 0.99
@@ -448,103 +440,6 @@ decay_steps = 100000
 decay_lr = 2e-4
 
 _CONFIGS = [
-    TrainConfig(
-        name="pi05_single",
-        model=pi0_config.Pi0Config(
-            state_dim=7,
-            action_dim=10,
-            action_horizon=50,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-            pi05=True,
-            image_keys=vb_single_arm.VIS_IMAGE_KEYS,
-            ),
-        data=SimpleDataConfig(
-            repo_id=repo_id,
-            assets=AssetsConfig(
-                asset_id=asset_id,
-                assets_dir=assets_dir,
-            ),
-            data_transforms=lambda model: _transforms.Group(
-                inputs=[vb_single_arm.VBInputs(model_type=ModelType.PI05)],
-                outputs=[vb_single_arm.VBOutputs()],
-            ),
-            base_config=DataConfig(
-                prompt_from_task=True,
-            ),
-        ),
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=warmup_steps,
-            peak_lr=peak_lr,       
-            decay_steps=decay_steps,
-            decay_lr=decay_lr,      
-        ),
-
-        # Freeze filter for LoRA fine-tuning (freeze pre-trained weights, train LoRA adapters)
-        freeze_filter=pi0_config.Pi0Config(
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-            pi05=True
-        ).get_freeze_filter(),
-        # Disable EMA for LoRA fine-tuning
-        ema_decay=None,
-        # Can use larger batch size with LoRA (lower memory footprint)
-        fsdp_devices=fsdp_devices,
-        batch_size=batch_size,
-        num_train_steps=num_train_steps,
-        exp_name=data_name,
-        # Load pre-trained weights for PaliGemma and action_expert, skip tactile components
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-    ),
-
-    TrainConfig(
-        name="pi05_single_vitac",
-        model=pi0_config.Pi0Config(
-            state_dim=7,
-            action_dim=10,
-            action_horizon=50,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-            pi05=True,
-            image_keys=vb_single_vitac.VIS_IMAGE_KEYS,
-            ),
-        data=SimpleDataConfig(
-            repo_id=repo_id,
-            assets=AssetsConfig(
-                asset_id=asset_id,
-                assets_dir=assets_dir,
-            ),
-            data_transforms=lambda model: _transforms.Group(
-                inputs=[vb_single_vitac.VBInputs(model_type=ModelType.PI05)],
-                outputs=[vb_single_vitac.VBOutputs()],
-            ),
-            base_config=DataConfig(
-                prompt_from_task=True,
-            ),
-        ),
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=warmup_steps,
-            peak_lr=peak_lr,       
-            decay_steps=decay_steps,
-            decay_lr=decay_lr,      
-        ),
-
-        # Freeze filter for LoRA fine-tuning (freeze pre-trained weights, train LoRA adapters)
-        freeze_filter=pi0_config.Pi0Config(
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-            pi05=True
-        ).get_freeze_filter(),
-        # Disable EMA for LoRA fine-tuning
-        ema_decay=None,
-        # Can use larger batch size with LoRA (lower memory footprint)
-        fsdp_devices=fsdp_devices,
-        batch_size=batch_size,
-        num_train_steps=num_train_steps,
-        exp_name=data_name,
-        # Load pre-trained weights for PaliGemma and action_expert, skip tactile components
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-    ),
 
     TrainConfig(
         name="pi05_bi",
@@ -561,49 +456,6 @@ _CONFIGS = [
             repo_id=repo_id,
             assets=AssetsConfig(
                 asset_id = asset_id,
-                assets_dir=assets_dir,
-            ),
-            data_transforms=lambda model: _transforms.Group(
-                inputs=[vb_policy_vis.VBInputs(model_type=ModelType.PI05)],
-                outputs=[vb_policy_vis.VBOutputs()],
-            ),
-            base_config=DataConfig(
-                prompt_from_task=True,
-            ),
-        ),
-
-        # Freeze filter for LoRA fine-tuning (freeze pre-trained weights, train LoRA adapters)
-        freeze_filter=pi0_config.Pi0Config(
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-            pi05=True
-        ).get_freeze_filter(),
-        # Disable EMA for LoRA fine-tuning
-        ema_decay=None,
-        # Can use larger batch size with LoRA (lower memory footprint)
-        fsdp_devices=fsdp_devices,
-        batch_size=batch_size,
-        num_train_steps=num_train_steps,
-        exp_name=data_name,
-        # Load pre-trained weights for PaliGemma and action_expert, skip tactile components
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-    ),
-
-    TrainConfig(
-        name="pi05_bi_no_state",
-        model=pi0_config.Pi0Config(
-            state_dim=2, # state只有一个夹爪宽度
-            action_dim=20,
-            action_horizon=50,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-            pi05=True,
-            image_keys=vb_policy_vis.VIS_IMAGE_KEYS,
-            ),
-        data=SimpleDataConfig(
-            repo_id=repo_id,
-            assets=AssetsConfig(
-                asset_id=asset_id,
                 assets_dir=assets_dir,
             ),
             data_transforms=lambda model: _transforms.Group(

@@ -411,7 +411,7 @@ class _Module(nn.Module):
 # ---------------------------------------------------------------------------
 
 def Module(config: TactileMAEConfig | None = None, **kw) -> _Module:
-    """Create a TactileVideoMAE Flax Linen module.
+    """Create an AnyTouch Flax Linen module.
 
     Pass ``lora_rank=8`` (or any rank > 0) to enable LoRA on all attention
     and MLP projections.  ``lora_rank=0`` (default) is a plain encoder.

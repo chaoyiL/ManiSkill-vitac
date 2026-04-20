@@ -33,7 +33,7 @@ class Enhanced3DVisualizer(CombinedVisualizer):
 
     def _init_world_scene_cache(self):
         """初始化并缓存世界场景、相机和静态网格"""
-        from user_client.robot_visualization.src.viz_vb_data import (_axis_mesh, _lookat_camera_pose)
+        from robot_visualization.src.viz_vb_data import (_axis_mesh, _lookat_camera_pose)
 
         scene = pyrender.Scene(bg_color=[0.05, 0.08, 0.12, 1.0])
 
@@ -210,7 +210,7 @@ class Enhanced3DVisualizer(CombinedVisualizer):
     
     def render_world_scene(self, current_idx):
         """渲染世界场景"""
-        from user_client.robot_visualization.src.viz_vb_data import (_line_mesh, _pointcloud_mesh, RenderFlags)
+        from robot_visualization.src.viz_vb_data import (_line_mesh, _pointcloud_mesh, RenderFlags)
 
         if self._world_scene is None:
             self._init_world_scene_cache()
@@ -703,7 +703,7 @@ def main():
     import argparse
     from zarr.storage import ZipStore
     import zarr
-    from user_client.robot_visualization.src.replay_buffer import ReplayBuffer
+    from robot_visualization.src.replay_buffer import ReplayBuffer
     
     parser = argparse.ArgumentParser()
     parser.add_argument('zarr_path', nargs='?', default='data/_0115_bi_pick_and_place_2ver.zarr.zip')

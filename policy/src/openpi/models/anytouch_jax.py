@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import re
-import sys
 from pathlib import Path
 
 import flax.traverse_util
@@ -21,13 +20,7 @@ import numpy as np
 import openpi.shared.array_typing as at
 
 logger = logging.getLogger("openpi")
-
-# Ensure the anytouch package is importable.
-_ANYTOUCH_ROOT = Path(__file__).resolve().parents[3] / "anytouch"
-if str(_ANYTOUCH_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ANYTOUCH_ROOT.parent))
-
-from anytouch.model.tactile_mae_jax import (  # type: ignore[reportMissingImports]  # noqa: E402
+from policy.anytouch.model.tactile_mae_jax import (
     Module,
     TactileMAEConfig,
     _Module,
@@ -123,7 +116,7 @@ class AnyTouchWeightLoader:
 
     def load(self, params: at.Params) -> at.Params:
         """Merge pretrained AnyTouch weights into *params*."""
-        from anytouch.weight_converter import (  # type: ignore[reportMissingImports]
+        from policy.anytouch.weight_converter import (
             infer_config_from_checkpoint,
             load_params_from_pytorch,
         )
