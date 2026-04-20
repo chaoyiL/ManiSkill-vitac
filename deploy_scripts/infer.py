@@ -1,4 +1,3 @@
-from math import ceil
 import sys
 import os
 
@@ -11,8 +10,9 @@ from multiprocessing.managers import SharedMemoryManager
 from pathlib import Path
 from datetime import datetime
 import threading
-from queue import Queue
+from queue import Empty, Full, Queue
 import json
+import pickle
 
 import click
 import cv2
@@ -23,11 +23,10 @@ import numpy as np
 import plotly.graph_objects as go
 from openpi.training import config as _config
 from openpi.policies import policy_config
-from utils.precise_sleep import precise_wait
 from client.interface_client import InterfaceClient
 
 class ObsSaver:
-    """异步保存observation数据，不影响eval过程"""
+    """异步保存接收到的 obs_dict，不影响推理主循环。"""
 
     def __init__(self, save_dir: str, data_type: str):
         """
@@ -39,12 +38,19 @@ class ObsSaver:
         self.save_dir = Path(save_dir) / f"eval_obs_{timestamp}"
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.data_type = data_type
+        self.metadata = {
+            "data_type": data_type,
+            "created_at": datetime.now().isoformat(),
+        }
 
         # 使用队列进行异步保存
         self.save_queue = Queue(maxsize=100)  # 限制队列大小，避免内存溢出
         self.save_thread = None
         self.running = False
         self.step_count = 0
+
+        with open(self.save_dir / "meta.json", "w") as f:
+            json.dump(self.metadata, f, indent=2)
 
         print(f"[ObsSaver] Initialized. Save directory: {self.save_dir}")
 
@@ -62,13 +68,14 @@ class ObsSaver:
             self.save_thread.join(timeout=5.0)
         print(f"[ObsSaver] Stopped. Total steps saved: {self.step_count}")
 
-    def save_obs(self, obs: dict, step_idx: int = None):
+    def save_obs(self, obs: dict, step_idx: int = None, obs_seq: int | None = None):
         """
         将obs添加到保存队列（非阻塞）
 
         Args:
-            obs: observation字典
+            obs: 接收到的 obs_dict
             step_idx: 步骤索引（如果为None，使用内部计数器）
+            obs_seq: 机器人端 observation 序号
         """
         if not self.running:
             return
@@ -79,20 +86,20 @@ class ObsSaver:
 
         try:
             # 非阻塞添加，如果队列满了就跳过
-            self.save_queue.put_nowait((step_idx, obs))
-        except:
+            self.save_queue.put_nowait((step_idx, obs_seq, obs))
+        except Full:
             # 队列满了，跳过这次保存
             pass
 
     def _save_worker(self):
         """后台保存线程"""
-        while self.running:
+        while self.running or not self.save_queue.empty():
             try:
                 # 从队列获取数据，超时1秒
-                step_idx, obs = self.save_queue.get(timeout=1.0)
-                self._save_single_obs(step_idx, obs)
+                step_idx, obs_seq, obs = self.save_queue.get(timeout=1.0)
+                self._save_single_obs(step_idx, obs, obs_seq)
                 self.save_queue.task_done()
-            except:
+            except Empty:
                 continue
 
     def _numpy_to_json_serializable(self, obj):
@@ -110,64 +117,45 @@ class ObsSaver:
         else:
             return obj
 
-    def _save_single_obs(self, step_idx: int, obs: dict):
-        """保存单个observation - 保存所有obs数据"""
+    def _save_single_obs(self, step_idx: int, obs: dict, obs_seq: int | None = None):
+        """保存单个 obs_dict。"""
         step_dir = self.save_dir / f"step_{step_idx:06d}"
         step_dir.mkdir(exist_ok=True)
 
-        # 保存时间戳为JSON
-        if 'timestamp' in obs:
-            timestamp_data = self._numpy_to_json_serializable(obs['timestamp'])
-            with open(step_dir / "timestamp.json", 'w') as f:
-                json.dump(timestamp_data, f, indent=2)
+        with open(step_dir / "obs_dict.pkl", "wb") as f:
+            pickle.dump(obs, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-        # 遍历所有obs数据并保存
+        summary = {
+            "step_idx": step_idx,
+            "obs_seq": obs_seq,
+            "keys": sorted(obs.keys()) if isinstance(obs, dict) else None,
+            "timestamp": self._numpy_to_json_serializable(obs.get("timestamp")) if isinstance(obs, dict) and "timestamp" in obs else None,
+        }
+        with open(step_dir / "summary.json", "w") as f:
+            json.dump(summary, f, indent=2)
+
+        if not isinstance(obs, dict):
+            return
+
         for key, value in obs.items():
-            if key == 'timestamp':
+            if not isinstance(value, np.ndarray) or value.ndim < 3:
+                continue
+            if "camera" not in key and "rgb" not in key and "tactile" not in key:
                 continue
 
-            if isinstance(value, np.ndarray) and len(value.shape) >= 3:
-                # 检查是否是图像数据（camera, rgb, tactile相关）
-                if 'camera' in key or 'rgb' in key or 'tactile' in key:
-                    # 保存为图像文件（取最后一帧）
-                    if len(value.shape) == 4:  # (T, H, W, C)
-                        img = value[-1]  # 取最后一帧
-                    elif len(value.shape) == 3:  # (H, W, C)
-                        img = value
-                    else:
-                        # 不是标准图像格式，保存为JSON
-                        json_data = self._numpy_to_json_serializable(value)
-                        with open(step_dir / f"{key}.json", 'w') as f:
-                            json.dump(json_data, f, indent=2)
-                        continue
-
-                    # 转换数据类型和格式
-                    if img.dtype == np.float32:
-                        img = (img * 255).astype(np.uint8)
-                    elif img.max() <= 1.0 and img.dtype in [np.float32, np.float64]:
-                        img = (img * 255).astype(np.uint8)
-
-                    # RGB转BGR用于cv2保存
-                    # if len(img.shape) == 3 and img.shape[-1] == 3:
-                    #     img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-                    # else:
-                    img_path = step_dir / f"{key}.jpg"
-                    cv2.imwrite(str(img_path), img)
-                else:
-                    # 非图像数据，保存为JSON（包括robot pose, gripper width等）
-                    json_data = self._numpy_to_json_serializable(value)
-                    with open(step_dir / f"{key}.json", 'w') as f:
-                        json.dump(json_data, f, indent=2)
-            elif isinstance(value, np.ndarray):
-                # 低维数据（robot pose, gripper width等），保存为JSON
-                json_data = self._numpy_to_json_serializable(value)
-                with open(step_dir / f"{key}.json", 'w') as f:
-                    json.dump(json_data, f, indent=2)
+            if value.ndim == 4:  # (T, H, W, C)
+                img = value[-1]
+            elif value.ndim == 3:  # (H, W, C)
+                img = value
             else:
-                # 其他类型数据，保存为JSON
-                json_data = self._numpy_to_json_serializable(value)
-                with open(step_dir / f"{key}.json", 'w') as f:
-                    json.dump(json_data, f, indent=2)
+                continue
+
+            if img.dtype in (np.float32, np.float64) and img.max() <= 1.0:
+                img = (img * 255).astype(np.uint8)
+            elif img.dtype != np.uint8:
+                img = img.astype(np.uint8)
+
+            cv2.imwrite(str(step_dir / f"{key}.jpg"), img)
 
 
 @click.command()
@@ -176,7 +164,7 @@ class ObsSaver:
 @click.option('--data_type', '-dt', default='vitac',help='vision, vitac, vitacpc')
 @click.option('--language_prompt', '-lp', default='Open the red pot, pick up the blue cylinder on the table and place it into the pot.', help='Language prompt')
 
-@click.option('--save_obs', '-so', default=False, help='Save observation data for verification (saves every step)')
+@click.option('--save_obs', '-so', default=True, help='Save observation data for verification (saves every step)')
 @click.option('--control_frequency', '-f', default=5, type=float, help="Control frequency in Hz.")
 @click.option('--controller_frequency', '-cf', default=80, type=float, help="Controller frequency in Hz.")
 
@@ -235,6 +223,11 @@ def main(config,
     print("jax backend:", jax.default_backend())
     print("jax devices:", jax.devices())
 
+    obs_saver = None
+    if save_obs:
+        obs_saver = ObsSaver(save_dir=ROOT_DIR, data_type=data_type)
+        obs_saver.start()
+
     with SharedMemoryManager() as shm_manager:
 
         cv2.setNumThreads(2)
@@ -260,6 +253,8 @@ def main(config,
 
             while True:
                 obs_seq, obs_dict = client.recv_obs()
+                if obs_saver is not None:
+                    obs_saver.save_obs(obs_dict, step_idx=iter_idx, obs_seq=obs_seq)
 
                 infer_start = time.monotonic()
                 result = policy.infer(obs_dict)
@@ -281,6 +276,8 @@ def main(config,
             print("Interrupted!")
             client.send_state("stop")
         finally:
+            if obs_saver is not None:
+                obs_saver.stop()
             client.close()
 
 if __name__ == '__main__':
