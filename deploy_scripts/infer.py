@@ -35,7 +35,7 @@ class ObsSaver:
             data_type: 数据类型 ('vision' 或 'vitac')
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.save_dir = Path(save_dir) / f"eval_obs_{timestamp}"
+        self.save_dir = Path(save_dir) / "eval_obs" / timestamp
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.data_type = data_type
         self.metadata = {
@@ -80,8 +80,9 @@ class ObsSaver:
         if not self.running:
             return
 
-        if step_idx is None:
-            step_idx = self.step_count
+        if step_idx is not None:
+            self.step_count = step_idx
+        else:
             self.step_count += 1
 
         try:
@@ -252,6 +253,8 @@ def main(config,
             iter_idx = 0
 
             while True:
+                iter_idx += 1
+
                 obs_seq, obs_dict = client.recv_obs()
                 if obs_saver is not None:
                     obs_saver.save_obs(obs_dict, step_idx=iter_idx, obs_seq=obs_seq)
@@ -269,8 +272,6 @@ def main(config,
                         f"infer_time_ms={infer_elapsed * 1000.0:.1f}"
                     )
                     last_status_log_time = now
-
-                iter_idx += 1
 
         except KeyboardInterrupt:
             print("Interrupted!")
