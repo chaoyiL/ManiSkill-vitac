@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import time
-from user_client.robot_visualization.src.viz_vb_data import (CombinedVisualizer, ROBOT_IDS, resize_with_label, 
+from robot_visualization.src.viz_vb_data import (CombinedVisualizer, ROBOT_IDS, resize_with_label, 
                          hstack_with_sep, create_combined_image)
 import trimesh
 import pyrender

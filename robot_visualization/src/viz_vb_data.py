@@ -13,8 +13,8 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-from user_client.robot_visualization.src.replay_buffer import ReplayBuffer
-from user_client.robot_visualization.src.imagecodecs_numcodecs import register_codecs
+from robot_visualization.src.replay_buffer import ReplayBuffer
+from robot_visualization.src.imagecodecs_numcodecs import register_codecs
 register_codecs()
 
 # 传感器配置

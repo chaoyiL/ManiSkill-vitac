@@ -2442,6 +2442,7 @@ dependencies = [
     { name = "plotly", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "polars", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "pykin", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "pyrender", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "pyudev", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "rich", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "scipy", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -2588,7 +2589,6 @@ rlds = [
 viz = [
     { name = "matplotlib", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "pyopengl", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "pyrender", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "trimesh", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 
@@ -2623,6 +2623,7 @@ requires-dist = [
     { name = "plotly" },
     { name = "polars", specifier = ">=1.30.0" },
     { name = "pykin" },
+    { name = "pyrender", specifier = ">=0.1.45" },
     { name = "pyudev" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "scipy", specifier = ">=1.7.0" },
@@ -2769,7 +2770,6 @@ rlds = [
 viz = [
     { name = "matplotlib", specifier = ">=3.10.0" },
     { name = "pyopengl", specifier = ">=3.1.4" },
-    { name = "pyrender", specifier = ">=0.1.45" },
     { name = "trimesh", specifier = ">=3.9.0" },
 ]
 
