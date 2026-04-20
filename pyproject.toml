@@ -1,0 +1,298 @@
+[project]
+name = "openpi"
+version = "0.1.0"
+description = "Physical Intelligence open source repo"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+license = { file = "LICENSE" }
+dependencies = [
+    "atomics",
+    "augmax>=0.3.4",
+    "dm-tree>=0.1.8",
+    "einops>=0.8.0",
+    "equinox>=0.11.8",
+    "flatbuffers>=24.3.25",
+    "flax==0.10.2",
+    "fsspec>=2024.6.0,<2026.0.0",
+    "gcsfs>=2024.6.0,<2026.0.0",
+    "gym-aloha>=0.1.1",
+    "imagecodecs",
+    "transforms3d",
+    "kaleido>=1.0.0",
+    "plotly",
+    "pykin",
+    "pyudev",
+    "imageio>=2.36.1",
+    "jax[cuda12]==0.5.3",
+    "jaxtyping==0.2.36",
+    "lerobot @ git+https://github.com/huggingface/lerobot.git@0cf864870cf29f4738d3ade893e6fd13fbd7cdb5",
+    "ml_collections==1.0.0",
+    "numpy>=1.22.4,<2.0.0",
+    "numcodecs>=0.9.0",
+    "numpydantic>=1.6.6",
+    "opencv-python==4.11.0.86",
+    "openpi-client",
+    "fastapi",
+    "orbax-checkpoint==0.11.13",
+    "pillow>=11.0.0",
+    "scipy>=1.7.0",
+    "sentencepiece>=0.2.0",
+    "torch==2.7.1+cu128",
+    "tqdm-loggable>=0.2",
+    "typing-extensions>=4.12.2",
+    "tyro>=0.9.5",
+    "v4l2-python3",
+    "wandb>=0.19.1",
+    "zarr>=2.10.0",
+    "filelock>=3.16.1",
+    "beartype==0.19.0",
+    "treescope>=0.1.7",
+    "transformers==4.53.2",
+    "rich>=14.0.0",
+    "polars>=1.30.0",
+]
+
+
+[project.urls]
+Repository = "https://github.com/Physical-Intelligence/openpi"
+
+[dependency-groups]
+dev = [
+    "accelerate",
+    "addict",
+    "asttokens",
+    "attrs",
+    "av",
+    "blinker",
+    "catkin-pkg",
+    "cffi",
+    "chardet",
+    "click",
+    "comm",
+    "configargparse",
+    "contourpy",
+    "cycler",
+    "dash",
+    "decorator",
+    "defusedxml",
+    "diffusers",
+    "dill",
+    "distro",
+    "docker-pycreds",
+    "docutils",
+    "easyocr",
+    "empy",
+    "entrypoints",
+    "exceptiongroup",
+    "executing",
+    "fasteners",
+    "fastjsonschema",
+    "flask",
+    "fonttools",
+    "gitdb",
+    "gitpython",
+    "hf-xet",
+    "huggingface-hub",
+    "hydra-core",
+    "importlib-metadata",
+    "importlib-resources",
+    "ipython",
+    "itsdangerous",
+    "jedi",
+    "jinja2",
+    "joblib",
+    "jsonschema",
+    "jsonschema-specifications",
+    "jupyter-core",
+    "jupyterlab-widgets",
+    "kiwisolver",
+    "lazy-loader",
+    "llvmlite",
+    "narwhals",
+    "nbformat",
+    "nest-asyncio",
+    "netifaces",
+    "networkx",
+    "ninja",
+    "numba",
+    "numexpr",
+    "open3d-cpu",
+    "opencv-contrib-python",
+    "opencv-python-headless",
+    "packaging",
+    "pandas",
+    "parso",
+    "pathtools",
+    "pexpect",
+    "pip",
+    "platformdirs",
+    "plotly",
+    "prompt-toolkit",
+    "protobuf",
+    "psutil",
+    "ptyprocess",
+    "pure-eval",
+    "pyclipper",
+    "pycparser",
+    "pygments",
+    "pyparsing",
+    "pyquaternion",
+    "pyserial",
+    "python-bidi",
+    "pytz",
+    "pyyaml",
+    "referencing",
+    "regex",
+    "reportlab",
+    "requests",
+    "retrying",
+    "rospkg",
+    "rpds-py",
+    "safetensors",
+    "scikit-image",
+    "scikit-learn",
+    "sentry-sdk",
+    "setproctitle",
+    "setuptools",
+    "shapely",
+    "smmap",
+    "stack-data",
+    "sympy",
+    "threadpoolctl",
+    "tifffile",
+    "timm",
+    "torchaudio==2.7.1+cu128",
+    "torchvision==0.22.1+cu128",
+    "tqdm",
+    "traitlets",
+    "wcwidth",
+    "werkzeug",
+    "wheel",
+    "widgetsnbextension",
+    "zarr",
+    "zipp",
+    "pytest>=8.3.4",
+    "ruff>=0.8.6",
+    "pre-commit>=4.0.1",
+    "ipykernel>=6.29.5",
+    "ipywidgets>=8.1.5",
+    "pynvml>=12.0.0",
+]
+viz = [
+    "matplotlib>=3.10.0",
+    "PyOpenGL>=3.1.4",
+    "pyrender>=0.1.45",
+    "trimesh>=3.9.0",
+]
+rlds = [
+    "dlimp",
+    "tensorflow-cpu==2.15.0",
+    "tensorflow-datasets==4.9.9",
+]
+
+[tool.uv]
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+override-dependencies = [
+    "ml-dtypes==0.4.1",
+    "tensorstore==0.1.74",
+    "pyopengl>=3.1.4",
+]
+dependency-metadata = [
+    { name = "pyrender", version = "0.1.45", requires-dist = [
+        "freetype-py",
+        "imageio",
+        "networkx",
+        "numpy",
+        "Pillow",
+        "pyglet>=1.4.10",
+        "PyOpenGL>=3.1.4",
+        "scipy",
+        "six",
+        "trimesh",
+    ] },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+openpi-client = { path = "../robot_server/packages/openpi-client", editable = true }
+lerobot = { git = "https://github.com/huggingface/lerobot", rev = "0cf864870cf29f4738d3ade893e6fd13fbd7cdb5" }
+dlimp = { git = "https://github.com/kvablack/dlimp", rev = "ad72ce3a9b414db2185bc0b38461d4101a65477a" }
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["docker", "third_party", "src/openpi/models_pytorch/transformers_replace/*"]
+
+[tool.ruff.lint]
+# https://docs.astral.sh/ruff/rules/
+select = [
+    "B",
+    "C4",
+    "DTZ",
+    "E4",
+    "E7",
+    "E9",
+    "F",
+    "FBT",
+    "FURB",
+    "I",
+    "ICN",
+    "ISC",
+    "LOG",
+    "N",
+    "PD",
+    "PERF",
+    "PIE",
+    "PLC",
+    "PLE",
+    "PLR1",
+    "PLR5",
+    "PLW",
+    "PT",
+    "Q",
+    "RET",
+    "RUF",
+    "SIM",
+    "SLF",
+    "T10",
+    "T20",
+    "UP",
+    "W",
+]
+ignore = [
+    "F722",   # Conflicts with array typing.
+    "T201",   # We use print statements.
+    "PD008",  # Lots of false positives.
+    "ISC001", # Disabling to support ruff format.
+    "LOG015", # Use logger.info.
+]
+unfixable = [
+    "B905", # Fix defaults to strict=False, which is not what we want.
+]
+
+[tool.ruff.lint.isort]
+force-single-line = true
+force-sort-within-sections = true
+single-line-exclusions = ["collections.abc", "typing", "typing_extensions"]
+known-third-party = ["wandb"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["policy/src/openpi"]
+
+[tool.pytest.ini_options]
+markers = ["manual: should be run manually."]
+testpaths = ["src", "scripts", "packages"]

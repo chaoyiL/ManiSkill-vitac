@@ -1,0 +1,25 @@
+# Python bytecode and cache artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Large local artifacts
+user_client/checkpoint/
+robot_server/eval_obs_data/
+robot_server/ee_action_logs/
+
+# Local tooling artifacts
+.codex
