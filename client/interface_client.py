@@ -72,6 +72,7 @@ class InterfaceClient:
                     ping_interval=None,
                 )
             except OSError:
+                print("[client] OS Error")
                 time.sleep(1.0)
             except InvalidStatus as exc:
                 raise RuntimeError(
