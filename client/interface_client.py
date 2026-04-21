@@ -71,8 +71,8 @@ class InterfaceClient:
                     # false positives with sync websockets.
                     ping_interval=None,
                 )
-            except OSError:
-                print("[client] OS Error")
+            except OSError as exc:
+                print(f"[client] connect to {self._uri} failed: {exc!r}")
                 time.sleep(1.0)
             except InvalidStatus as exc:
                 raise RuntimeError(
