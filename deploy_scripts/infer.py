@@ -173,7 +173,7 @@ class ObsSaver:
 @click.option('--no_state_obs_mode', default=False, help='no state obs mode')
 
 @click.option('--ip', default='127.0.0.1', help='which ip the messages are sent to')
-@click.option('--port', default='8000', help='port')
+@click.option('--port', default='26421', help='port')
 @click.option('--token', default='111', help='your test token')
 
 def main(config,
