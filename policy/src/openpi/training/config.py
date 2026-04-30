@@ -20,7 +20,6 @@ import openpi.policies.vb_policy_vis as vb_policy_vis
 import openpi.policies.vb_policy_vitac as vb_policy_vitac
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
-import openpi.training.droid_rlds_dataset as droid_rlds_dataset
 import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
 import openpi.transforms as _transforms
@@ -85,13 +84,6 @@ class DataConfig:
 
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
-
-    # Only used for RLDS data loader (ie currently only used for DROID).
-    rlds_data_dir: str | None = None
-    # Action space for DROID dataset.
-    action_space: droid_rlds_dataset.DroidActionSpace | None = None
-    # List of datasets to sample from: name, version, weight, and optionally filter_dict_path
-    datasets: Sequence[droid_rlds_dataset.RLDSDataset] = ()
 
 
 class GroupFactory(Protocol):

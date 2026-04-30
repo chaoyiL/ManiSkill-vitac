@@ -13,8 +13,6 @@
     # 检查LeRobot数据集（指定数据集repo_id）
     uv run scripts/check_dataset.py --repo-id your_username/your_dataset_name
 
-    # 检查RLDS数据集（DROID）
-    uv run scripts/check_dataset.py --config-name pi05_full_droid_finetune
 """
 
 import json
@@ -31,9 +29,7 @@ try:
 except ImportError:
     HAS_MATPLOTLIB = False
 
-import openpi.models.model as _model
 import openpi.training.config as _config
-import openpi.training.data_loader as _data_loader
 import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
 
 logging.basicConfig(level=logging.INFO)
@@ -152,36 +148,12 @@ def check_dataset_with_config(config_name: str, num_samples: int = 10):
         logger.info(f"\n数据配置:")
         logger.info(f"  - repo_id: {data_config.repo_id}")
         logger.info(f"  - asset_id: {data_config.asset_id}")
-        logger.info(f"  - rlds_data_dir: {data_config.rlds_data_dir}")
         logger.info(f"  - prompt_from_task: {data_config.prompt_from_task}")
 
-        if data_config.rlds_data_dir is not None:
-            logger.info("\n检测到RLDS数据集（DROID）")
-            logger.info("RLDS数据集检查需要实际加载数据，这可能需要一些时间...")
-            # 创建数据加载器来检查数据
-            data_loader = _data_loader.create_data_loader(
-                config,
-                shuffle=False,
-                num_batches=min(5, num_samples // config.batch_size + 1),
-                skip_norm_stats=True,
-            )
-            logger.info("成功创建RLDS数据加载器")
-            # 检查第一个batch
-            batch_iter = iter(data_loader)
-            first_batch = next(batch_iter)
-            observation, actions = first_batch
-            logger.info(f"\n第一个batch的信息:")
-            logger.info(f"  - Observation类型: {type(observation)}")
-            logger.info(f"  - Actions形状: {actions.shape if hasattr(actions, 'shape') else type(actions)}")
-            if hasattr(observation, "images"):
-                logger.info(f"  - 图像字段: {list(observation.images.keys())}")
-            if hasattr(observation, "state"):
-                logger.info(f"  - 状态形状: {observation.state.shape if hasattr(observation.state, 'shape') else type(observation.state)}")
-
-        elif data_config.repo_id is not None:
+        if data_config.repo_id is not None:
             check_lerobot_dataset(data_config.repo_id, num_samples)
         else:
-            logger.warning("配置中没有指定数据集（repo_id或rlds_data_dir）")
+            logger.warning("配置中没有指定数据集 repo_id")
 
     except Exception as e:
         logger.error(f"检查数据集时出错: {e}", exc_info=True)
