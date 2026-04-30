@@ -44,6 +44,41 @@ If you use private Hugging Face datasets or checkpoints, log in before training:
 hf auth login
 ```
 
+To download a Hugging Face dataset manually before training, replace the placeholders below with the publisher namespace and dataset name:
+
+```bash
+hf download <publisher-huggingface-username>/<dataset-name> \
+  --repo-type dataset \
+  --cache-dir ~/.cache/huggingface/dataset
+```
+
+The dataset snapshot is downloaded to a cache path like:
+
+```text
+~/.cache/huggingface/dataset/datasets--<publisher-huggingface-username>--<dataset-name>/snapshots/<snapshot-hash>
+```
+
+Link that snapshot into the LeRobot cache path expected by the configured `repo_id`:
+
+```bash
+mkdir -p ~/.cache/huggingface/lerobot/<DATASET_REPO_NAMESPACE>
+ln -s ~/.cache/huggingface/dataset/datasets--<publisher-huggingface-username>--<dataset-name>/snapshots/<snapshot-hash> \
+  ~/.cache/huggingface/lerobot/<DATASET_REPO_NAMESPACE>/<DATASET_TRAIN_NAME>
+```
+
+For example, with `DATASET_REPO_NAMESPACE = "chaoyi"`, the link target should be under:
+
+```text
+~/.cache/huggingface/lerobot/chaoyi/<DATASET_TRAIN_NAME>
+```
+
+If Hugging Face cannot be reached from the machine, switch to the mirror endpoint before logging in or downloading:
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+export HF_TOKEN=<your-token>
+```
+
 Some assets are downloaded automatically by the code on first use. Make sure the machine has network access before running the corresponding entrypoint:
 
 | Downloaded asset | Source | Triggered by |
@@ -87,10 +122,10 @@ For the default values, the derived paths are:
 
 The available policy configs are the `TrainConfig(...)` entries in `_CONFIGS`:
 
-| Config | Use case | Data transform | Model inputs | Pretrained weights |
-| --- | --- | --- | --- | --- |
-| `pi05_bi` | Bimanual vision-only policy. | `vb_policy_vis.VBInputs` / `VBOutputs` | Two RGB images, `state_dim=20`, `action_dim=20`, `action_horizon=50`. | Pi0.5 base checkpoint from `gs://openpi-assets/checkpoints/pi05_base/params`. |
-| `pi05_bi_vitac` | Bimanual visual-tactile policy. | `vb_policy_vitac.VBInputs` / `VBOutputs` | Two RGB images plus four tactile images through AnyTouch, `state_dim=20`, `action_dim=20`, `action_horizon=50`. | Pi0.5 base checkpoint plus AnyTouch weights from Hugging Face. |
+| Config           | Use case                         | Data transform                              | Model inputs                                                                                                       | Pretrained weights                                                                    |
+| ---              | ---                              | ---                                         | ---                                                                                                                | ---                                                                                   |
+| `pi05_bi`        | Bimanual vision-only policy.     | `vb_policy_vis.VBInputs` / `VBOutputs`      | Two RGB images, `state_dim=20`, `action_dim=20`, `action_horizon=50`.                                               | Pi0.5 base checkpoint from `gs://openpi-assets/checkpoints/pi05_base/params`.         |
+| `pi05_bi_vitac` | Bimanual visual-tactile policy.  | `vb_policy_vitac.VBInputs` / `VBOutputs`    | Two RGB images plus four tactile images through AnyTouch, `state_dim=20`, `action_dim=20`, `action_horizon=50`.    | Pi0.5 base checkpoint plus AnyTouch weights from Hugging Face.                        |
 
 To add a new preset, duplicate one `TrainConfig(...)` entry in `_CONFIGS`, give it a unique `name`, and update the model, data transform, freeze, and weight-loader fields together.
 
