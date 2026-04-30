@@ -44,6 +44,8 @@ If you use private Hugging Face datasets or checkpoints, log in before training:
 hf auth login
 ```
 
+### Download Hugging Face Datasets
+
 To download a Hugging Face dataset manually before training, replace the placeholders below with the publisher namespace and dataset name:
 
 ```bash
