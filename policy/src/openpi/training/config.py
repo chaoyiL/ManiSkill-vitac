@@ -310,70 +310,6 @@ class TrainConfig:
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
 
-
-# ============================================================================
-# Data conversion pipeline config (replaces VB_task_config.yaml)
-# ============================================================================
-@dataclasses.dataclass
-class DataConvertConfig:
-    """Unified configuration for the data collection → LeRobot conversion pipeline.
-
-    This replaces VB_task_config.yaml as the single source of truth.
-    The pipeline (run_data_collection_pipeline_le.py) distributes these
-    parameters to the appropriate steps:
-      - Image processing params  → 01_crop_img.py
-      - ArUco params             → 04/05 (via a generated temp yaml)
-      - Dataset plan params      → 07 (via a generated temp yaml)
-      - Conversion params        → convert_raw_to_lerobot_smooth.py
-    """
-    # ---- Task identity ----
-    task_name: str = "default"
-    task_type: str = "bimanual"       # "single" or "bimanual"
-    single_hand_side: str = "left"    # only used when task_type == "single"
-
-    # ---- Image processing (01_crop_img.py) ----
-    # Target resolution after cropping; images are resized here so later steps
-    # receive correctly-sized images without needing to know the source resolution.
-    visual_out_res: tuple = (224, 224)
-    tactile_out_res: tuple = (224, 224)
-    # Apply a circular fisheye mask to visual images
-    use_mask: bool = False
-    fisheye_mask_radius: int = 390
-    fisheye_mask_center: tuple | None = None   # None → auto-detect center
-    fisheye_mask_fill_color: tuple = (0, 0, 0)
-
-    # ---- ArUco detection (04_get_aruco_pos.py, 05_get_width.py) ----
-    cam_intrinsic_json_path: str = "../../assets/intri_result/gopro_intrinsics_2_7k.json"
-    aruco_dict: str = "DICT_4X4_50"
-    marker_size_map: dict = dataclasses.field(
-        default_factory=lambda: {0: 0.02, 1: 0.02, 2: 0.02, 3: 0.02}
-    )
-    left_aruco_left_id: int = 0
-    left_aruco_right_id: int = 1
-    right_aruco_left_id: int = 2
-    right_aruco_right_id: int = 3
-    aruco_max_workers: int = 4
-
-    # ---- Dataset plan (07_generate_dataset_plan.py) ----
-    min_episode_length: int = 10
-    visual_cam_latency: float = 0.101
-    pose_latency: float = 0.002
-    use_tactile_img: bool = True
-
-    # ---- Conversion (convert_raw_to_lerobot_smooth.py) ----
-    output_repo_id: str | None = None  # defaults to "chaoyi/{task_name}"
-    fps: int = 30
-    language_instruction: list = dataclasses.field(
-        default_factory=lambda: ["perform manipulation task"]
-    )
-    single_arm: bool = False
-    smooth_sigma: float = 1.0
-    # When True, state vector contains only gripper widths (no EEF pose deltas).
-    no_state: bool = True
-    # Inpaint ArUco tag regions (requires 04's aruco detection results).
-    use_inpaint_tag: bool = True
-    tag_scale: float = 1.3
-
 # ============================================================================
 # 数据集命名 - 在此修改可统一切换数据集
 # ============================================================================
@@ -384,50 +320,18 @@ DATASET_RAW_TASK_NAME: str = "raw_0118_data"
 # LeRobot 仓库命名空间（如 chaoyi）
 DATASET_REPO_NAMESPACE: str = "chaoyi"
 
-# Edit this instance to configure your experiment.
-DATA_CONVERT_CONFIG = DataConvertConfig(
-    task_name=DATASET_RAW_TASK_NAME,
-    task_type="bimanual",
-    single_hand_side="left",
-    # Image processing
-    visual_out_res=(224, 224),
-    tactile_out_res=(224, 224),
-    use_mask=False,
-    fisheye_mask_radius=390,
-    fisheye_mask_center=None,
-    fisheye_mask_fill_color=(0, 0, 0),
-    # ArUco
-    cam_intrinsic_json_path="./assets/intri_result/gopro_intrinsics_2_7k.json",
-    aruco_dict="DICT_4X4_50",
-    marker_size_map={0: 0.02, 1: 0.02, 2: 0.02, 3: 0.02},
-    left_aruco_left_id=0,
-    left_aruco_right_id=1,
-    right_aruco_left_id=2,
-    right_aruco_right_id=3,
-    aruco_max_workers=4,
-    # Dataset plan
-    min_episode_length=10,
-    visual_cam_latency=0.101,
-    pose_latency=0.002,
-    use_tactile_img=True,
-    # Conversion
-    output_repo_id=None,
-    fps=30,
-    language_instruction=["perform manipulation task"],
-    single_arm=False,
-    smooth_sigma=1.0,
-    no_state=False,
-    use_inpaint_tag=True,
-    tag_scale=1.3,
-)
-
-
 # Use `get_config` if you need to get a config by name in your code.
 '''data config - 由顶部 DATASET_* 变量派生'''
 data_name = DATASET_TRAIN_NAME
 repo_id = f"{DATASET_REPO_NAMESPACE}/{data_name}"  # 需与 convert_zarr_to_lerobot.py 中 repo_id 一致
 asset_id = data_name
 assets_dir = "assets"
+
+'''policy config'''
+action_horizon = 50
+anytouch_pool_tokens = 49 # 需要能够整除196
+anytouch_lora_rank = 8
+anytouch_lora_alpha = 8.0
 
 '''training config'''
 fsdp_devices = 2
@@ -440,13 +344,12 @@ decay_steps = 100000
 decay_lr = 2e-4
 
 _CONFIGS = [
-
     TrainConfig(
         name="pi05_bi",
         model=pi0_config.Pi0Config(
             state_dim=20,
             action_dim=20,
-            action_horizon=8,
+            action_horizon=action_horizon,
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
             pi05=True,
@@ -479,6 +382,12 @@ _CONFIGS = [
         fsdp_devices=fsdp_devices,
         batch_size=batch_size,
         num_train_steps=num_train_steps,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=warmup_steps,
+            peak_lr=peak_lr,
+            decay_steps=decay_steps,
+            decay_lr=decay_lr,
+        ),
         exp_name=data_name,
         # Load pre-trained weights for PaliGemma and action_expert, skip tactile components
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
@@ -489,7 +398,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(
             state_dim=20,
             action_dim=20,
-            action_horizon=20,
+            action_horizon=action_horizon,
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
             pi05=True,
@@ -501,11 +410,11 @@ _CONFIGS = [
             anytouch_variant="2frames",      # "2frames", "4frames", ...
             anytouch_num_frames=2,
             anytouch_stride=2,
-            anytouch_pool_tokens=49, # None = no pool
+            anytouch_pool_tokens=anytouch_pool_tokens, # None = no pool
             # LoRA fine-tuning: base weights frozen, only lora_a/lora_b trained.
             # Set to 0 to fully fine-tune the AnyTouch encoder instead.
-            anytouch_lora_rank=8,
-            anytouch_lora_alpha=8.0,
+            anytouch_lora_rank=anytouch_lora_rank,
+            anytouch_lora_alpha=anytouch_lora_alpha,
         ),
         data=SimpleDataConfig(
             repo_id=repo_id,
@@ -527,13 +436,19 @@ _CONFIGS = [
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
             pi05=True,
-            anytouch_lora_rank=8,
+            anytouch_lora_rank=anytouch_lora_rank,
         ).get_freeze_filter(),
         # Disable EMA for LoRA fine-tuning
         ema_decay=None,
         fsdp_devices=fsdp_devices,
         batch_size=batch_size,
         num_train_steps=num_train_steps,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=warmup_steps,
+            peak_lr=peak_lr,
+            decay_steps=decay_steps,
+            decay_lr=decay_lr,
+        ),
         exp_name=data_name,
         # 1) Load PaliGemma/action-expert pretrained weights from gs://
         # 2) Load AnyTouch pretrained weights from local checkpoint (auto-downloaded)
