@@ -33,7 +33,7 @@ conda create -n maniskill-vitac python=3.11 -y
 conda activate maniskill-vitac
 conda install -c conda-forge 'ffmpeg=7' libstdcxx-ng -y
 
-python -m pip install -U uv
+python -m pip install uv
 uv sync --locked
 ```
 
