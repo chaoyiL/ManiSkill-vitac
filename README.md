@@ -16,6 +16,7 @@ User-side training and deployment workspace for visual-tactile robot policies. T
 
 ## Requirements
 
+- **Most important:** Ubuntu version must be `>22.04`.
 - Linux x86_64.
 - Python `>=3.11,<3.12`.
 - NVIDIA GPU with a CUDA 12-compatible driver. The project pins `jax[cuda12]` and PyTorch CUDA 12.8 wheels.
