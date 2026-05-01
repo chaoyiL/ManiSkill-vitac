@@ -68,10 +68,10 @@ ln -s ~/.cache/huggingface/dataset/datasets--<publisher-huggingface-username>--<
   ~/.cache/huggingface/lerobot/<DATASET_REPO_NAMESPACE>/<DATASET_TRAIN_NAME>
 ```
 
-For example, with `DATASET_REPO_NAMESPACE = "chaoyi"`, the link target should be under:
+For example, with `DATASET_REPO_NAMESPACE = "chaoyi"`, `DATASET_TRAIN_NAME = "0118_data_1smooth"` the link target should be under:
 
 ```text
-~/.cache/huggingface/lerobot/chaoyi/<DATASET_TRAIN_NAME>
+~/.cache/huggingface/lerobot/chaoyi/0118_data_1smooth
 ```
 
 If Hugging Face cannot be reached from the machine, switch to the mirror endpoint before logging in or downloading:
