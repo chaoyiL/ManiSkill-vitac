@@ -44,7 +44,7 @@ If you use private Hugging Face datasets or checkpoints, log in before training:
 hf auth login
 ```
 
-### Download Hugging Face Datasets
+## Download Hugging Face Datasets
 
 To download a Hugging Face dataset manually before training, replace the placeholders below with the publisher namespace and dataset name:
 
@@ -242,6 +242,12 @@ assets/0118_data_1smooth/norm_stats.json
 This file is important. Training loads it and saved checkpoints copy it into `assets/` inside each checkpoint step. Deployment then loads normalization stats from the checkpoint directory.
 
 ## Train Checkpoints
+
+WandB logging is enabled by default. Log in before training:
+
+```bash
+wandb login
+```
 
 The simplest training command is:
 
