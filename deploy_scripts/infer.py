@@ -172,9 +172,10 @@ class ObsSaver:
 @click.option('--single_arm_mode', default=False, help='single arm mode')
 @click.option('--no_state_obs_mode', default=False, help='no state obs mode')
 
-@click.option('--ip', default='127.0.0.1', help='which ip the messages are sent to')
+@click.option('--ip', default='https://savings-shadow-judicial.ngrok-free.dev', help='which ip the messages are sent to')
 @click.option('--port', default='26421', help='port')
-@click.option('--token', default='111', help='your test token')
+@click.option('--add-port/--no-add-port', default=None, help='Whether to append --port to --ip. Defaults to auto-detection.')
+@click.option('--token', default='123', help='your test token')
 
 def main(config,
     ckpt_dir,
@@ -187,6 +188,7 @@ def main(config,
     no_state_obs_mode,
     ip,
     port,
+    add_port,
     token
     ):
     
@@ -199,7 +201,7 @@ def main(config,
     action_horizon = int(train_config.model.action_horizon)
     steps_per_inference = action_horizon
 
-    client = InterfaceClient(ip, port, token=token)
+    client = InterfaceClient(ip, port, token=token, add_port=add_port)
 
     config_dict = {
         "data_type" : data_type,
