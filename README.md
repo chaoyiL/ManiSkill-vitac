@@ -29,11 +29,7 @@ User-side training and deployment workspace for visual-tactile robot policies. T
 Create a Python 3.11 conda environment for system libraries, then let `uv` manage the project virtual environment:
 
 ```bash
-conda create -n maniskill-vitac python=3.11 -y
-conda activate maniskill-vitac
-conda install -c conda-forge 'ffmpeg=7' libstdcxx-ng -y
-
-python -m pip install uv
+pip install uv
 uv sync --locked
 ```
 
