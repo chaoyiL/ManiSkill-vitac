@@ -306,7 +306,7 @@ class TrainConfig:
 # 数据集命名 - 在此修改可统一切换数据集
 # ============================================================================
 # 训练数据名称（用于 repo_id、asset_id、exp_name）
-DATASET_TRAIN_NAME: str = "0118_data_1smooth"
+DATASET_TRAIN_NAME: str = "blue_clean_01"
 # 原始数据任务名（数据采集管线：data/{task_name}/）
 DATASET_RAW_TASK_NAME: str = "raw_0118_data"
 # LeRobot 仓库命名空间（如 chaoyi）
@@ -326,7 +326,7 @@ anytouch_lora_rank = 8
 anytouch_lora_alpha = 8.0
 
 '''training config'''
-fsdp_devices = 2
+fsdp_devices = 1
 batch_size = fsdp_devices * 64
 num_train_steps = 100000
 # lr

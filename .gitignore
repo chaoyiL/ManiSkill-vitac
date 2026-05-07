@@ -17,8 +17,9 @@ env/
 ENV/
 
 # Large local artifacts
-checkpoint/
+checkpoints/
 eval_obs/
+wandb/
 
 # Local tooling artifacts
 .codex

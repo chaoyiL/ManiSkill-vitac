@@ -60,7 +60,6 @@ The dataset snapshot is downloaded to a cache path like:
 Link that snapshot into the LeRobot cache path expected by the configured `repo_id`:
 
 ```bash
-mkdir -p ~/.cache/huggingface/lerobot/<DATASET_REPO_NAMESPACE>
 ln -s ~/.cache/huggingface/dataset/datasets--<publisher-huggingface-username>--<dataset-name>/snapshots/<snapshot-hash> \
   ~/.cache/huggingface/lerobot/<DATASET_REPO_NAMESPACE>/<DATASET_TRAIN_NAME>
 ```

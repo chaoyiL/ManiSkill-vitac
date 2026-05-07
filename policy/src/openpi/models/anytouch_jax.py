@@ -19,6 +19,12 @@ import numpy as np
 
 import openpi.shared.array_typing as at
 
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(PROJECT_ROOT))
+
 logger = logging.getLogger("openpi")
 from policy.anytouch.model.tactile_mae_jax import (
     Module,

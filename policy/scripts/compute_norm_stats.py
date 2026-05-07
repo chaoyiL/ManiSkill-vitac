@@ -5,6 +5,15 @@ will compute the mean and standard deviation of the data in the dataset and save
 to the config assets directory.
 """
 
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+POLICY_SRC = PROJECT_ROOT / "policy" / "src"
+
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(POLICY_SRC))
+
 import numpy as np
 import tqdm
 import tyro
