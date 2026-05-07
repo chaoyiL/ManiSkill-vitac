@@ -12,8 +12,8 @@ dependencies = [
     "equinox>=0.11.8",
     "flatbuffers>=24.3.25",
     "flax==0.10.2",
-    "fsspec>=2024.6.0,<2026.0.0",
-    "gcsfs>=2024.6.0,<2026.0.0",
+    "fsspec==2025.3.0",
+    "gcsfs==2025.3.0",
     "gym-aloha>=0.1.1",
     "imagecodecs",
     "transforms3d",
@@ -51,6 +51,8 @@ dependencies = [
     "transformers==4.53.2",
     "rich>=14.0.0",
     "polars>=1.30.0",
+    "chex==0.1.89",
+    "datasets==3.6.0",
 ]
 
 

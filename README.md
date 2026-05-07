@@ -33,7 +33,16 @@ pip install uv
 uv sync --locked
 ```
 
-Keep the conda environment active when using the shell wrappers so PyAV and related libraries load the conda FFmpeg/libstdc++ builds.
+If you want to change the source, run:
+```bash
+mkdir -p ~/.config/uv
+cat > ~/.config/uv/uv.toml << 'EOF'
+[[index]]
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
+default = true
+EOF
+```
+We use TUNA in the example, but you can also use other sources.
 
 If you use private Hugging Face datasets or checkpoints, log in before training:
 
