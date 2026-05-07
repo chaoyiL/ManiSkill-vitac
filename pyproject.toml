@@ -52,7 +52,7 @@ dependencies = [
     "rich>=14.0.0",
     "polars>=1.30.0",
     "chex==0.1.89",
-    "datasets==3.6.0",
+    "datasets==4.8.5",
 ]
 
 
