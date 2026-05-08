@@ -47,7 +47,7 @@ We use TUNA in the example, but you can also use other sources.
 If you use private Hugging Face datasets or checkpoints, log in before training:
 
 ```bash
-hf auth login
+uv run hf auth login
 ```
 
 ## Download Hugging Face Datasets
@@ -55,7 +55,7 @@ hf auth login
 To download a Hugging Face dataset manually before training, replace the placeholders below with the publisher namespace and dataset name:
 
 ```bash
-hf download <publisher-huggingface-username>/<dataset-name> \
+uv run hf download <publisher-huggingface-username>/<dataset-name> \
   --repo-type dataset \
   --cache-dir ~/.cache/huggingface/dataset
 ```

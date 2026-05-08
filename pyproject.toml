@@ -53,6 +53,7 @@ dependencies = [
     "polars>=1.30.0",
     "chex==0.1.89",
     "datasets==4.8.5",
+    "nvidia-ml-py>=13.595.45",
 ]
 
 
@@ -179,7 +180,6 @@ dev = [
     "pre-commit>=4.0.1",
     "ipykernel>=6.29.5",
     "ipywidgets>=8.1.5",
-    "pynvml>=12.0.0",
 ]
 viz = [
     "matplotlib>=3.10.0",

@@ -18,6 +18,53 @@ import openpi.transforms as _transforms
 T_co = TypeVar("T_co", covariant=True)
 
 
+class _TorchColumnCompatibleDataset:
+    """Compatibility wrapper for LeRobot with newer Hugging Face datasets.
+
+    `datasets>=4` returns a Column object for `dataset["key"]`, while the
+    pinned LeRobot version passes that directly to `torch.stack`.
+    """
+
+    def __init__(self, dataset):
+        self._dataset = dataset
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            value = self._dataset.with_format("torch")[key][:]
+            if isinstance(value, torch.Tensor):
+                return list(value)
+            return value
+        return self._dataset[key]
+
+    def __len__(self):
+        return len(self._dataset)
+
+    def __iter__(self):
+        return iter(self._dataset)
+
+    def __getattr__(self, name):
+        dataset = self.__dict__.get("_dataset")
+        if dataset is None:
+            raise AttributeError(name)
+        return getattr(dataset, name)
+
+    def select(self, *args, **kwargs):
+        return type(self)(self._dataset.select(*args, **kwargs))
+
+
+def _patch_lerobot_column_access() -> None:
+    if getattr(lerobot_dataset.LeRobotDataset.load_hf_dataset, "_openpi_column_compatible", False):
+        return
+
+    original_load_hf_dataset = lerobot_dataset.LeRobotDataset.load_hf_dataset
+
+    def load_hf_dataset_column_compatible(self):
+        return _TorchColumnCompatibleDataset(original_load_hf_dataset(self))
+
+    load_hf_dataset_column_compatible._openpi_column_compatible = True
+    lerobot_dataset.LeRobotDataset.load_hf_dataset = load_hf_dataset_column_compatible
+
+
 class Dataset(Protocol[T_co]):
     """Interface for a dataset with random access."""
 
@@ -92,6 +139,7 @@ def create_torch_dataset(
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
+    _patch_lerobot_column_access()
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
