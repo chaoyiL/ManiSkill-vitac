@@ -303,25 +303,23 @@ class TrainConfig:
             raise ValueError("Cannot resume and overwrite at the same time.")
 
 # ============================================================================
-# 数据集命名 - 在此修改可统一切换数据集
+# Dataset naming. Change these values here to switch datasets globally.
 # ============================================================================
-# 训练数据名称（用于 repo_id、asset_id、exp_name）
+# Training dataset name, used for repo_id, asset_id, and exp_name.
 DATASET_TRAIN_NAME: str = "blue_clean_01"
-# 原始数据任务名（数据采集管线：data/{task_name}/）
-DATASET_RAW_TASK_NAME: str = "raw_0118_data"
-# LeRobot 仓库命名空间（如 chaoyi）
+# LeRobot repository namespace, for example "chaoyi".
 DATASET_REPO_NAMESPACE: str = "chaoyi"
 
 # Use `get_config` if you need to get a config by name in your code.
-'''data config - 由顶部 DATASET_* 变量派生'''
+'''Data config derived from the DATASET_* variables above.'''
 data_name = DATASET_TRAIN_NAME
-repo_id = f"{DATASET_REPO_NAMESPACE}/{data_name}"  # 需与 convert_zarr_to_lerobot.py 中 repo_id 一致
+repo_id = f"{DATASET_REPO_NAMESPACE}/{data_name}"  # Must match the repo_id in convert_zarr_to_lerobot.py.
 asset_id = data_name
 assets_dir = "assets"
 
 '''policy config'''
 action_horizon = 50
-anytouch_pool_tokens = 49 # 需要能够整除196
+anytouch_pool_tokens = 49 # Must evenly divide 196.
 anytouch_lora_rank = 8
 anytouch_lora_alpha = 8.0
 
