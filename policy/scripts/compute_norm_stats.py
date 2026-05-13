@@ -105,17 +105,19 @@ def create_torch_dataloader(
 ) -> tuple[LimitedDataLoader, int]:
     if data_config.repo_id is None:
         raise ValueError("Data config must have a repo_id")
-    dataset = _data_loader.create_torch_dataset(data_config, action_horizon, model_config)
+    raw_dataset = _data_loader.create_torch_dataset(data_config, action_horizon, model_config)
     if data_config.repack_transforms.inputs:
         dataset = _data_loader.TransformedDataset(
-            dataset,
+            raw_dataset,
             [
                 *data_config.repack_transforms.inputs,
                 ExtractStateAndActions(),
             ],
         )
+    elif isinstance(raw_dataset, torch.utils.data.ConcatDataset):
+        dataset = torch.utils.data.ConcatDataset([StateActionDataset(dataset) for dataset in raw_dataset.datasets])
     else:
-        dataset = StateActionDataset(dataset)
+        dataset = StateActionDataset(raw_dataset)
 
     if batch_size <= 0:
         raise ValueError("batch_size must be positive.")

@@ -59,7 +59,7 @@ class AssetsConfig:
 @dataclasses.dataclass(frozen=True)
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
-    repo_id: str | None = None
+    repo_id: str | Sequence[str] | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -154,7 +154,7 @@ class ModelTransformFactory(GroupFactory):
 @dataclasses.dataclass(frozen=True)
 class DataConfigFactory(abc.ABC):
     # The LeRobot repo id.
-    repo_id: str = tyro.MISSING
+    repo_id: str | Sequence[str] = tyro.MISSING
     # Determines how the assets will be loaded.
     assets: AssetsConfig = dataclasses.field(default_factory=AssetsConfig)
     # Base config that will be updated by the factory.
@@ -305,15 +305,17 @@ class TrainConfig:
 # ============================================================================
 # Dataset naming. Change these values here to switch datasets globally.
 # ============================================================================
-# Training dataset name, used for repo_id, asset_id, and exp_name.
-DATASET_TRAIN_NAME: str = "blue_clean_01"
+# Training dataset names, used for repo_id. Use a tuple to train on multiple LeRobot datasets.
+DATASET_TRAIN_NAMES: tuple[str, ...] = ("black_smash_01", "black_smash_02", "black_smash_03")
+# Name used for asset_id, exp_name, and checkpoint directory.
+DATASET_TRAIN_NAME: str = "black_smash_01_02_03"
 # LeRobot repository namespace, for example "chaoyi".
 DATASET_REPO_NAMESPACE: str = "chaoyi"
 
 # Use `get_config` if you need to get a config by name in your code.
 '''Data config derived from the DATASET_* variables above.'''
 data_name = DATASET_TRAIN_NAME
-repo_id = f"{DATASET_REPO_NAMESPACE}/{data_name}"  # Must match the repo_id in convert_zarr_to_lerobot.py.
+repo_id = tuple(f"{DATASET_REPO_NAMESPACE}/{name}" for name in DATASET_TRAIN_NAMES)
 asset_id = data_name
 assets_dir = "assets"
 

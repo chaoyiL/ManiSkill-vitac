@@ -140,18 +140,27 @@ def create_torch_dataset(
         return FakeDataset(model_config, num_samples=1024)
 
     _patch_lerobot_column_access()
-    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
-    dataset = lerobot_dataset.LeRobotDataset(
-        data_config.repo_id,
-        delta_timestamps={
-            key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
-        },
-    )
 
-    if data_config.prompt_from_task:
-        dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+    def create_lerobot_dataset(single_repo_id: str) -> Dataset:
+        dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(single_repo_id)
+        dataset = lerobot_dataset.LeRobotDataset(
+            single_repo_id,
+            delta_timestamps={
+                key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
+            },
+        )
 
-    return dataset
+        if data_config.prompt_from_task:
+            dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+
+        return dataset
+
+    if isinstance(repo_id, Sequence) and not isinstance(repo_id, str):
+        return torch.utils.data.ConcatDataset(
+            [typing.cast(torch.utils.data.Dataset, create_lerobot_dataset(single_repo_id)) for single_repo_id in repo_id]
+        )
+
+    return create_lerobot_dataset(repo_id)
 
 
 def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip_norm_stats: bool = False) -> Dataset:
