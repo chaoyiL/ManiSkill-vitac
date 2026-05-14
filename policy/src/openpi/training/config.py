@@ -334,6 +334,8 @@ warmup_steps = 1000
 peak_lr = 2e-4
 decay_steps = 100000
 decay_lr = 2e-4
+# optimizer
+weight_decay = 1e-10
 
 _CONFIGS = [
     TrainConfig(
@@ -380,6 +382,7 @@ _CONFIGS = [
             decay_steps=decay_steps,
             decay_lr=decay_lr,
         ),
+        optimizer=_optimizer.AdamW(weight_decay=weight_decay),
         exp_name=data_name,
         # Load pre-trained weights for PaliGemma and action_expert, skip tactile components
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
@@ -441,6 +444,7 @@ _CONFIGS = [
             decay_steps=decay_steps,
             decay_lr=decay_lr,
         ),
+        optimizer=_optimizer.AdamW(weight_decay=weight_decay),
         exp_name=data_name,
         # 1) Load PaliGemma/action-expert pretrained weights from gs://
         # 2) Load AnyTouch pretrained weights from local checkpoint (auto-downloaded)

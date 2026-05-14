@@ -161,7 +161,7 @@ class ObsSaver:
 
 @click.command()
 @click.option('--config', '-c', default=f'pi05_bi_vitac', help='Config name for policy.')
-@click.option('--ckpt-dir', '-i', default='/home/rvsa/codehub/ManiSkill/user_client/checkpoint/pi05_bi_vitac/my_experiment/35000', help='Path to checkpoint directory')
+@click.option('--ckpt-dir', '-i', default='/home/rvsa/codehub/ManiSkill-vitac/checkpoint/65000', help='Path to checkpoint directory')
 @click.option('--data_type', '-dt', default='vitac',help='vision, vitac, vitacpc')
 @click.option('--language_prompt', '-lp', default='Open the red pot, pick up the blue cylinder on the table and place it into the pot.', help='Language prompt')
 
