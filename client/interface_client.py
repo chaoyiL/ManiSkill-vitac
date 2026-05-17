@@ -205,11 +205,30 @@ class InterfaceClient:
             }
         )
 
-    def recv_obs(self, timeout: float | None = None) -> tuple[int, Any]:
+    def recv_latest_obs(
+        self,
+        timeout: float | None = None,
+        drain_timeout: float = 0.0,
+        max_drain: int = 1000,
+    ) -> tuple[int, Any, int]:
         message = self._recv_message(timeout=timeout)
         if message.get("type") != "obs":
             raise RuntimeError(f"Unexpected robot bridge message while waiting for obs: {message}")
-        return int(message["obs_seq"]), message["obs"]
+
+        obs_seq, obs = int(message["obs_seq"]), message["obs"]
+        dropped_count = 0
+
+        for _ in range(max_drain):
+            try:
+                message = self._recv_message(timeout=drain_timeout)
+            except TimeoutError:
+                break
+            if message.get("type") != "obs":
+                raise RuntimeError(f"Unexpected robot bridge message while draining obs: {message}")
+            obs_seq, obs = int(message["obs_seq"]), message["obs"]
+            dropped_count += 1
+
+        return obs_seq, obs, dropped_count
 
     def send_action(self, action: Any, obs_seq: int) -> None:
         self._send_message(

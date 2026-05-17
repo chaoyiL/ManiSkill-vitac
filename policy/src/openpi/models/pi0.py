@@ -276,9 +276,9 @@ class Pi0(_model.BaseModel):
         image_keys = self.image_keys if self.image_keys is not None else list(observation.images.keys())
         observation = _model.preprocess_observation(preprocess_rng, observation, train=train, image_keys=image_keys)
 
-        batch_shape = actions.shape[:-2]
-        noise = jax.random.normal(noise_rng, actions.shape)
-        time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
+        batch_shape = actions.shape[:-2] # action shape: (B, action_horizon, action_dim) => batch_shape: (B,)
+        noise = jax.random.normal(noise_rng, actions.shape) # noise shape: (B, action_horizon, action_dim)
+        time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001 # time shape: (B,)
         time_expanded = time[..., None, None]
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions

@@ -161,21 +161,22 @@ class ObsSaver:
 
 @click.command()
 @click.option('--config', '-c', default=f'pi05_bi_vitac', help='Config name for policy.')
-@click.option('--ckpt-dir', '-i', default='/home/rvsa/codehub/ManiSkill-vitac/checkpoint/65000', help='Path to checkpoint directory')
+@click.option('--ckpt-dir', '-i', default='/home/rvsa/codehub/ManiSkill-vitac/checkpoints/65000', help='Path to checkpoint directory')
 @click.option('--data_type', '-dt', default='vitac',help='vision, vitac, vitacpc')
 @click.option('--language_prompt', '-lp', default='Open the red pot, pick up the blue cylinder on the table and place it into the pot.', help='Language prompt')
 
 @click.option('--save_obs', '-so', default=True, help='Save observation data for verification (saves every step)')
-@click.option('--control_frequency', '-f', default=5, type=float, help="Control frequency in Hz.")
+@click.option('--control_frequency', '-f', default=10, type=float, help="Control frequency in Hz.")
 @click.option('--controller_frequency', '-cf', default=80, type=float, help="Controller frequency in Hz.")
 
 @click.option('--single_arm_mode', default=False, help='single arm mode')
 @click.option('--no_state_obs_mode', default=False, help='no state obs mode')
 
-@click.option('--ip', default='https://savings-shadow-judicial.ngrok-free.dev', help='which ip the messages are sent to')
-@click.option('--port', default='26421', help='port')
+@click.option('--ip', default='101.6.57.21', help='which ip the messages are sent to')
+@click.option('--port', default='14214', help='port')
 @click.option('--add-port/--no-add-port', default=None, help='Whether to append --port to --ip. Defaults to auto-detection.')
 @click.option('--token', default='123', help='your test token')
+@click.option('--max-obs-drain', default=1000, type=int, help='Maximum queued obs frames to drain per inference step.')
 
 def main(config,
     ckpt_dir,
@@ -189,7 +190,8 @@ def main(config,
     ip,
     port,
     add_port,
-    token
+    token,
+    max_obs_drain,
     ):
     
     train_config = _config.get_config(config)
@@ -238,7 +240,7 @@ def main(config,
         print("Warming up policy inference")
 
         policy.reset()
-        obs_seq, obs_dict = client.recv_obs()
+        obs_seq, obs_dict, _ = client.recv_latest_obs(max_drain=max_obs_drain)
 
         # calculate raw action and send it to robot
         result = policy.infer(obs_dict)
@@ -257,7 +259,7 @@ def main(config,
             while True:
                 iter_idx += 1
 
-                obs_seq, obs_dict = client.recv_obs()
+                obs_seq, obs_dict, dropped_obs_count = client.recv_latest_obs(max_drain=max_obs_drain)
                 if obs_saver is not None:
                     obs_saver.save_obs(obs_dict, step_idx=iter_idx, obs_seq=obs_seq)
 
@@ -271,7 +273,8 @@ def main(config,
                 if now - last_status_log_time >= 2.0:
                     print(
                         f"[main] iter={iter_idx} obs_seq={obs_seq} "
-                        f"infer_time_ms={infer_elapsed * 1000.0:.1f}"
+                        f"infer_time_ms={infer_elapsed * 1000.0:.1f} "
+                        f"dropped_obs={dropped_obs_count}"
                     )
                     last_status_log_time = now
 
