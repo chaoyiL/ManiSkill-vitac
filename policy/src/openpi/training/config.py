@@ -309,7 +309,7 @@ class TrainConfig:
 DATASET_TRAIN_NAMES: tuple[str, ...] = ("black_smash_01", "black_smash_02", "black_smash_03")
 # Name used for asset_id, exp_name, and checkpoint directory.
 # DATASET_TRAIN_NAME: str = "black_smash_01_02_03"
-DATASET_TRAIN_NAME: str = "blue_clean_01"
+DATASET_TRAIN_NAME: str = "blue_green_red_clean_01_02"
 # LeRobot repository namespace, for example "chaoyi".
 DATASET_REPO_NAMESPACE: str = "chaoyi"
 
@@ -327,7 +327,7 @@ anytouch_lora_rank = 8
 anytouch_lora_alpha = 8.0
 
 '''training config'''
-fsdp_devices = 1
+fsdp_devices = 2
 batch_size = fsdp_devices * 64
 num_train_steps = 100000
 # lr

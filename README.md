@@ -242,6 +242,12 @@ Start the robot bridge/server first, then run:
   --controller_frequency 80
 ```
 
+If you want to deploy remotely, please unset all the proxies:
+
+```bash
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY
+```
+
 Important deployment options:
 
 | Option | Meaning |
@@ -256,3 +262,20 @@ Important deployment options:
 | `--no_state_obs_mode` | Set to `True` only if the robot bridge sends no-state observations expected by the policy. |
 
 After warmup, the script waits for Enter, sends `"start"` to the bridge, and begins the control loop. Stop with `Ctrl-C`; the script sends `"stop"` and closes the websocket.W
+
+Speed Test:
+```bash
+# client
+python deploy_scripts/network_speed_test.py inference \
+  --ip 101.6.57.21 \
+  --port 14214 \
+  -n 100 \
+  --jsonl infer_net.jsonl
+
+# server
+python deploy_scripts/network_speed_test.py robot \
+  --host 0.0.0.0 \
+  --port 26421 \
+  -n 100 \
+  --jsonl robot_net.jsonl
+```

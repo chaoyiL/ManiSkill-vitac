@@ -161,9 +161,9 @@ class ObsSaver:
 
 @click.command()
 @click.option('--config', '-c', default=f'pi05_bi_vitac', help='Config name for policy.')
-@click.option('--ckpt-dir', '-i', default='/home/rvsa/codehub/ManiSkill-vitac/checkpoints/65000', help='Path to checkpoint directory')
+@click.option('--ckpt-dir', '-i', default='/home/rvsa/codehub/ManiSkill-vitac/checkpoints/15000', help='Path to checkpoint directory')
 @click.option('--data_type', '-dt', default='vitac',help='vision, vitac, vitacpc')
-@click.option('--language_prompt', '-lp', default='Open the red pot, pick up the blue cylinder on the table and place it into the pot.', help='Language prompt')
+@click.option('--language_prompt', '-lp', default='Pick up the green test tube and use the test tube brush to clean it.', help='Language prompt')
 
 @click.option('--save_obs', '-so', default=True, help='Save observation data for verification (saves every step)')
 @click.option('--control_frequency', '-f', default=10, type=float, help="Control frequency in Hz.")
