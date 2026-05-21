@@ -21,6 +21,7 @@ checkpoints/
 eval_obs/
 wandb/
 network_test/
+assets/
 
 # Local tooling artifacts
 .codex
