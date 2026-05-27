@@ -98,7 +98,7 @@ check_deps() {
         exit 1
     fi
 
-    if ! uv run hf --version &>/dev/null; then
+    if ! uv run hf version &>/dev/null; then
         echo "=========================================="
         echo " uv 环境中未检测到 hf 命令，请执行:"
         echo "   uv add huggingface_hub"

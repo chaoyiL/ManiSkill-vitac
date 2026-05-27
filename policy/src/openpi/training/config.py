@@ -325,22 +325,22 @@ asset_id = data_name
 assets_dir = "assets"
 
 '''policy config'''
-action_horizon = 15
+action_horizon = 50
 anytouch_pool_tokens = 49 # Must evenly divide 196.
 anytouch_lora_rank = 0 # 0 = full AnyTouch fine-tune; >0 = LoRA adapters only (base weights frozen).
 anytouch_lora_alpha = 8.0
-paligemma_variant = "gemma_2b_lora" # "gemma_2b_lora" or "gemma_2b"
-action_expert_variant = "gemma_300m_lora" # "gemma_300m_lora" or "gemma_300m"
+paligemma_variant = "gemma_2b" # "gemma_2b_lora" or "gemma_2b"
+action_expert_variant = "gemma_300m" # "gemma_300m_lora" or "gemma_300m"
 
 '''training config'''
 fsdp_devices = 2
 batch_size = fsdp_devices * 64
 num_train_steps = 100000
 # lr
-warmup_steps = 1000
+warmup_steps = 10000
 peak_lr = 5e-5
 decay_steps = 100000
-decay_lr = 5e-5
+decay_lr = 1e-5
 # optimizer
 clip_gradient_norm = 1
 weight_decay = 1e-10
