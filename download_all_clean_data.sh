@@ -77,6 +77,14 @@ for node in tree.body:
                     namespace = value.value
                 elif isinstance(value, ast.Str):
                     namespace = value.s
+    elif isinstance(node, ast.AnnAssign):
+        target = node.target
+        if isinstance(target, ast.Name) and target.id == "DATASET_REPO_NAMESPACE":
+            value = node.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                namespace = value.value
+            elif isinstance(value, ast.Str):
+                namespace = value.s
 if not namespace:
     raise SystemExit("ERROR: DATASET_REPO_NAMESPACE 未在 config.py 中找到或不是字符串常量")
 print(namespace)
