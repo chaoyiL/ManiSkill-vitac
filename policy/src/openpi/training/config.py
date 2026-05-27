@@ -262,6 +262,10 @@ class TrainConfig:
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
     keep_period: int | None = 5000
 
+    # If true, also save train_state (optimizer state) for full training resume.
+    # If false, only save assets and params (smaller checkpoints; resume re-initializes the optimizer).
+    save_train_state: bool = False
+
     # If true, will overwrite the checkpoint directory if it already exists.
     overwrite: bool = False
     # If true, will resume training from the last checkpoint.
@@ -323,8 +327,10 @@ assets_dir = "assets"
 '''policy config'''
 action_horizon = 15
 anytouch_pool_tokens = 49 # Must evenly divide 196.
-anytouch_lora_rank = 8
+anytouch_lora_rank = 0 # 0 = full AnyTouch fine-tune; >0 = LoRA adapters only (base weights frozen).
 anytouch_lora_alpha = 8.0
+paligemma_variant = "gemma_2b_lora" # "gemma_2b_lora" or "gemma_2b"
+action_expert_variant = "gemma_300m_lora" # "gemma_300m_lora" or "gemma_300m"
 
 '''training config'''
 fsdp_devices = 2
@@ -332,12 +338,14 @@ batch_size = fsdp_devices * 64
 num_train_steps = 100000
 # lr
 warmup_steps = 1000
-peak_lr = 1e-4
+peak_lr = 5e-5
 decay_steps = 100000
-decay_lr = 1e-4
+decay_lr = 5e-5
 # optimizer
-clip_gradient_norm = 0.5
-weight_decay = 1e-3
+clip_gradient_norm = 1
+weight_decay = 1e-10
+# save train state
+save_train_state = False
 
 _CONFIGS = [
     TrainConfig(
@@ -346,8 +354,8 @@ _CONFIGS = [
             state_dim=20,
             action_dim=20,
             action_horizon=action_horizon,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
+            paligemma_variant=paligemma_variant,
+            action_expert_variant=action_expert_variant,
             pi05=True,
             image_keys=vb_policy_vis.VIS_IMAGE_KEYS,
             ),
@@ -368,8 +376,8 @@ _CONFIGS = [
 
         # Freeze filter for LoRA fine-tuning (freeze pre-trained weights, train LoRA adapters)
         freeze_filter=pi0_config.Pi0Config(
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
+            paligemma_variant=paligemma_variant,
+            action_expert_variant=action_expert_variant,
             pi05=True
         ).get_freeze_filter(),
         # Disable EMA for LoRA fine-tuning
@@ -391,6 +399,7 @@ _CONFIGS = [
         exp_name=data_name,
         # Load pre-trained weights for PaliGemma and action_expert, skip tactile components
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        save_train_state=save_train_state,
     ),
 
     TrainConfig(
@@ -399,8 +408,8 @@ _CONFIGS = [
             state_dim=20,
             action_dim=20,
             action_horizon=action_horizon,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
+            paligemma_variant=paligemma_variant,
+            action_expert_variant=action_expert_variant,
             pi05=True,
             # Only visual images go through SigLIP; tactile goes through AnyTouch.
             image_keys=vb_policy_vitac.VIS_ONLY_IMAGE_KEYS,
@@ -433,8 +442,8 @@ _CONFIGS = [
 
         # Freeze filter: PaliGemma base + AnyTouch base frozen; LoRA adapters trained.
         freeze_filter=pi0_config.Pi0Config(
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
+            paligemma_variant=paligemma_variant,
+            action_expert_variant=action_expert_variant,
             pi05=True,
             anytouch_lora_rank=anytouch_lora_rank,
         ).get_freeze_filter(),
@@ -465,6 +474,7 @@ _CONFIGS = [
                 stride=2,
             ),
         )),
+        save_train_state=save_train_state,
     ),
 
 ]
