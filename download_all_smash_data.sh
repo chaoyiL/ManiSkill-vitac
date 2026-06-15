@@ -26,18 +26,23 @@ HF_DATASET_CACHE_DIR="${1:-${HF_DATASET_CACHE_DIR:-${HOME}/.cache/huggingface/da
 
 DATASETS=(
     white_smash_01
-    white_smash_02
     white_smash_03
     white_smash_04
+    white_smash_05
+    white_smash_06
+    white_smash_07
     yellow_smash_01
     yellow_smash_02
     yellow_smash_03
-    yellow_smash_04
+    yellow_smash_05
+    yellow_smash_06
+    yellow_smash_07
     black_smash_01
     black_smash_02
     black_smash_03
     black_smash_04
-    black_smash_05
+    black_smash_06
+    black_smash_07
 )
 
 log() {

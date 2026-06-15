@@ -175,7 +175,7 @@ class ObsSaver:
 @click.option('--ip', default='101.6.57.21', help='which ip the messages are sent to')
 @click.option('--port', default='14214', help='port')
 @click.option('--add-port/--no-add-port', default=None, help='Whether to append --port to --ip. Defaults to auto-detection.')
-@click.option('--token', default='ManiVitac0524', help='your test token')
+@click.option('--token', default='ManiVitac0530', help='your test token')
 @click.option('--max-obs-drain', default=1000, type=int, help='Maximum queued obs frames to drain per inference step.')
 
 def main(config,
