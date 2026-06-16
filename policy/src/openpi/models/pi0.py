@@ -367,10 +367,8 @@ class Pi0(_model.BaseModel):
         self,
         observation: _model.Observation,
         reference_actions: _model.Actions,
-        eps_samples: at.Float[at.Array, "steps b ah ad"],
-        *,
-        use_finite_difference: bool = False,
-        fd_eps: float = 1e-3,
+        step_indices: at.Int[at.Array, "steps"],
+        t_min: float = 1e-3,
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         """Integrate actions to the Gaussian base while reusing the prefix KV cache.
 
@@ -385,10 +383,10 @@ class Pi0(_model.BaseModel):
         x = jnp.asarray(reference_actions, dtype=jnp.float32)
         if x.ndim == 2:
             x = x[None, ...]
-        eps_samples = jnp.asarray(eps_samples, dtype=x.dtype)
         batch_size = x.shape[0]
-        num_steps = eps_samples.shape[0]
-        dt = jnp.asarray(1.0 / num_steps, dtype=jnp.float32)
+        num_steps = step_indices.shape[0]
+        t_min = jnp.asarray(t_min, dtype=jnp.float32)
+        dt = (jnp.asarray(1.0, dtype=jnp.float32) - t_min) / num_steps
 
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
@@ -410,22 +408,33 @@ class Pi0(_model.BaseModel):
                 adarms_cond=[None, adarms_cond],
             )
             assert prefix_out is None
-            return self.action_out_proj(suffix_out[:, -self.action_horizon :])
+            return self.action_out_proj(suffix_out[:, -self.action_horizon :]).astype(jnp.float32)
 
-        def scan_body(carry, eps):
+        def exact_velocity_and_divergence(x_t, t):
+            x_flat = jnp.reshape(x_t, (batch_size, -1))
+
+            def flat_velocity(x_flat_in):
+                x_in = jnp.reshape(x_flat_in, x_t.shape)
+                return jnp.reshape(velocity(x_in, t), x_flat.shape)
+
+            v_flat = flat_velocity(x_flat)
+            jac = jax.jacfwd(flat_velocity)(x_flat)
+            divergence = jnp.einsum("bebe->b", jac)
+            return jnp.reshape(v_flat, x_t.shape), divergence
+
+        def scan_body(carry, _):
             x_t, r_tot, t = carry
-            if use_finite_difference:
-                v_t = velocity(x_t, t)
-                v_eps = velocity(x_t + fd_eps * eps, t)
-                divergence = jnp.sum((v_eps - v_t) * eps, axis=tuple(range(1, v_t.ndim))) / fd_eps
-            else:
-                v_t, jvp_out = jax.jvp(lambda x_in: velocity(x_in, t), (x_t,), (eps,))
-                divergence = jnp.sum(jvp_out * eps, axis=tuple(range(1, jvp_out.ndim)))
-            return (x_t + v_t * dt, r_tot + divergence * dt, t + dt), None
+            v0, div0 = exact_velocity_and_divergence(x_t, t)
+            t_next = t + dt
+            x_euler = x_t + v0 * dt
+            v1, div1 = exact_velocity_and_divergence(x_euler, t_next)
+            x_next = x_t + 0.5 * (v0 + v1) * dt
+            r_next = r_tot + 0.5 * (div0 + div1) * dt
+            return (x_next, r_next, t_next), None
 
-        t0 = jnp.zeros((batch_size,), dtype=jnp.float32)
+        t0 = jnp.full((batch_size,), t_min, dtype=jnp.float32)
         r_tot0 = jnp.zeros((batch_size,), dtype=jnp.float32)
-        (x_base, r_tot, _), _ = jax.lax.scan(scan_body, (x, r_tot0, t0), eps_samples)
+        (x_base, r_tot, _), _ = jax.lax.scan(scan_body, (x, r_tot0, t0), step_indices)
 
         event_dims = tuple(range(1, x_base.ndim))
         event_size = self.action_horizon * self.action_dim

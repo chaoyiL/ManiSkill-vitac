@@ -315,7 +315,7 @@ DATASET_TRAIN_NAMES: tuple[str, ...] = ("black_smash_01", "black_smash_02", "bla
 # Name used for asset_id, exp_name, and checkpoint directory.
 # DATASET_TRAIN_NAME: str = "black_smash_01_02_03"
 # DATASET_TRAIN_NAME: str = "blue_green_red_clean_01_02"
-DATASET_TRAIN_NAME: str = "white_smash_07"
+DATASET_TRAIN_NAME: str = "byw_smash_13"
 
 # LeRobot repository namespace, for example "chaoyi".
 DATASET_REPO_NAMESPACE: str = "chaoyi"

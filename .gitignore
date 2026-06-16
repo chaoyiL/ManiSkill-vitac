@@ -22,6 +22,7 @@ eval_obs/
 wandb/
 network_test/
 assets/
+eval_outputs/
 
 # Local tooling artifacts
 .codex

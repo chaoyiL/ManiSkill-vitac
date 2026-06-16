@@ -19,6 +19,7 @@ import numpy as np
 
 from openpi.models import model as _model
 from openpi.models.pi0 import make_attn_mask
+from openpi.models import tokenizer as _tokenizer
 from openpi.shared import nnx_utils
 from openpi.training import checkpoints as _checkpoints
 from openpi.training import config as _config
@@ -301,8 +302,11 @@ def load_model(train_config: _config.TrainConfig, checkpoint_dir: str | pathlib.
     if not params_dir.exists():
         raise FileNotFoundError(f"Checkpoint params directory not found: {params_dir}")
     params = _model.restore_params(params_dir, dtype=jnp.bfloat16)
+    model_config = train_config.model
+    if hasattr(model_config, "dtype"):
+        model_config = dataclasses.replace(model_config, dtype="bfloat16")
     try:
-        model = train_config.model.load(params)
+        model = model_config.load(params)
     except ValueError as exc:
         message = str(exc)
         if "anytouch" in message or "tactile_proj" in message:
@@ -420,37 +424,27 @@ def predict_episode_velocity(
     return predict_velocity(model, observation, x, t)
 
 
-def velocity_and_hutchinson_divergence(
+def velocity_and_exact_divergence(
     model: _model.BaseModel,
     context: VelocityContext,
     x: jax.Array,
     t: jax.Array,
-    eps: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
-    """Compute velocity and estimate Tr(dv/dx) with one Hutchinson vector."""
+    """Compute velocity and exact Tr(dv/dx)."""
 
-    def velocity_fn(x_in):
-        return predict_velocity_with_context(model, context, x_in, t)
+    x = jnp.asarray(x, dtype=jnp.float32)
+    batch_size = x.shape[0]
+    x_flat = jnp.reshape(x, (batch_size, -1))
 
-    velocity, jvp_out = jax.jvp(velocity_fn, (x,), (eps,))
-    divergence = jnp.sum(jvp_out * eps, axis=tuple(range(1, jvp_out.ndim)))
-    return velocity, divergence
+    def flat_velocity(x_flat_in):
+        x_in = jnp.reshape(x_flat_in, x.shape)
+        velocity = predict_velocity_with_context(model, context, x_in, t)
+        return jnp.reshape(velocity.astype(jnp.float32), x_flat.shape)
 
-
-def velocity_and_fd_divergence(
-    model: _model.BaseModel,
-    context: VelocityContext,
-    x: jax.Array,
-    t: jax.Array,
-    eps: jax.Array,
-    fd_eps: float,
-) -> tuple[jax.Array, jax.Array]:
-    """Estimate Tr(dv/dx) with finite-difference Hutchinson."""
-
-    velocity = predict_velocity_with_context(model, context, x, t)
-    velocity_eps = predict_velocity_with_context(model, context, x + fd_eps * eps, t)
-    divergence = jnp.sum((velocity_eps - velocity) * eps, axis=tuple(range(1, velocity.ndim))) / fd_eps
-    return velocity, divergence
+    velocity_flat = flat_velocity(x_flat)
+    jac = jax.jacfwd(flat_velocity)(x_flat)
+    divergence = jnp.einsum("bebe->b", jac)
+    return jnp.reshape(velocity_flat, x.shape), divergence
 
 
 def standard_normal_log_prob(x: jax.Array) -> jax.Array:
@@ -461,91 +455,97 @@ def standard_normal_log_prob(x: jax.Array) -> jax.Array:
     return -0.5 * (jnp.sum(jnp.square(x), axis=event_dims) + event_size * jnp.log(2.0 * jnp.pi))
 
 
-def _gaussian_kernel1d(sigma: float, radius: int | None = None) -> jax.Array:
-    if sigma <= 0:
-        raise ValueError(f"sigma must be positive, got {sigma}")
-    if radius is None:
-        radius = max(1, int(np.ceil(3.0 * sigma)))
-    x = jnp.arange(-radius, radius + 1, dtype=jnp.float32)
-    kernel = jnp.exp(-0.5 * jnp.square(x / sigma))
-    return kernel / jnp.sum(kernel)
-
-
-def gaussian_blur_spatial(array: jax.Array, *, sigma: float) -> jax.Array:
-    """Apply Gaussian blur over the last two spatial dimensions."""
-
-    array = jnp.asarray(array)
-    if array.ndim < 2:
-        raise ValueError(f"Expected at least 2 dimensions for spatial blur, got shape {array.shape}")
-
-    kernel = _gaussian_kernel1d(sigma).astype(array.dtype)
-    leading_shape = array.shape[:-2]
-    height, width = array.shape[-2:]
-    flat = jnp.reshape(array, (-1, height, width, 1))
-
-    kernel_h = jnp.reshape(kernel, (kernel.shape[0], 1, 1, 1))
-    kernel_w = jnp.reshape(kernel, (1, kernel.shape[0], 1, 1))
-    blurred = jax.lax.conv_general_dilated(
-        flat,
-        kernel_h,
-        window_strides=(1, 1),
-        padding="SAME",
-        dimension_numbers=("NHWC", "HWIO", "NHWC"),
-    )
-    blurred = jax.lax.conv_general_dilated(
-        blurred,
-        kernel_w,
-        window_strides=(1, 1),
-        padding="SAME",
-        dimension_numbers=("NHWC", "HWIO", "NHWC"),
-    )
-    return jnp.reshape(blurred[..., 0], (*leading_shape, height, width))
-
-
-def gaussian_blur_channel_last_image(image: jax.Array, *, sigma: float) -> jax.Array:
-    """Apply Gaussian blur to channel-last images shaped (..., H, W, C)."""
-
-    image = jnp.asarray(image)
-    if image.ndim < 3:
-        raise ValueError(f"Expected channel-last image with at least 3 dimensions, got shape {image.shape}")
-    channel_first = jnp.moveaxis(image, -1, -3)
-    blurred = gaussian_blur_spatial(channel_first, sigma=sigma)
-    return jnp.moveaxis(blurred, -3, -1)
-
-
-def blur_visual_observation(observation: _model.Observation, *, sigma: float) -> _model.Observation:
-    """Remove visual detail by Gaussian-blurring all visual image observations."""
-
-    if not observation.images:
-        raise ValueError("Observation has no visual images to blur.")
-    return dataclasses.replace(
-        observation,
-        images={key: gaussian_blur_channel_last_image(value, sigma=sigma) for key, value in observation.images.items()},
-    )
-
-
-def blur_tactile_observation(observation: _model.Observation, *, sigma: float) -> _model.Observation:
-    """Remove tactile detail by Gaussian-blurring tactile images."""
-
-    if observation.tactile is None:
-        raise ValueError("Observation has no tactile field to blur.")
-    return dataclasses.replace(
-        observation,
-        tactile=gaussian_blur_spatial(observation.tactile, sigma=sigma),
-    )
-
-
-def blur_modality_observation(
+def ablate_modality_observation(
     observation: _model.Observation,
     *,
     modality: str,
-    sigma: float,
+    prompt: str | None = None,
+    prompt_tokenizer: _tokenizer.PaligemmaTokenizer | None = None,
+    state_in_prompt: bool = False,
 ) -> _model.Observation:
-    if modality == "tactile":
-        return blur_tactile_observation(observation, sigma=sigma)
     if modality == "vision":
-        return blur_visual_observation(observation, sigma=sigma)
-    raise ValueError(f"Unsupported modality {modality!r}. Expected 'vision' or 'tactile'.")
+        if not observation.images:
+            raise ValueError("Observation has no visual images to ablate.")
+        return dataclasses.replace(
+            observation,
+            image_masks={
+                key: np.zeros_like(np.asarray(observation.image_masks.get(key, False)), dtype=np.bool_)
+                for key in observation.images
+            },
+        )
+    if modality == "tactile":
+        if observation.tactile is None:
+            raise ValueError("Observation has no tactile field to ablate.")
+        tactile_mask = observation.tactile_mask
+        if tactile_mask is None:
+            tactile_mask = False
+        return dataclasses.replace(
+            observation,
+            tactile_mask=np.zeros_like(np.asarray(tactile_mask), dtype=np.bool_),
+        )
+    if modality == "state":
+        if not state_in_prompt:
+            raise ValueError("state ablation expects a discrete-state model with state in the prompt.")
+        if prompt is None or prompt_tokenizer is None:
+            raise ValueError("state ablation requires prompt and prompt_tokenizer.")
+        if observation.tokenized_prompt_mask is None:
+            raise ValueError("Observation has no tokenized_prompt_mask to ablate.")
+
+        state = np.asarray(observation.state)
+        token_mask = np.asarray(observation.tokenized_prompt_mask, dtype=np.bool_).copy()
+        tokenizer = prompt_tokenizer._tokenizer
+        max_len = prompt_tokenizer._max_len
+        cleaned_text = prompt.strip().replace("_", " ").replace("\n", " ")
+
+        def state_span_for_state(state_i: np.ndarray) -> tuple[int, int]:
+            discretized_state = np.digitize(state_i, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
+            state_str = " ".join(map(str, discretized_state))
+            before_state = f"Task: {cleaned_text}, State: "
+            through_state = f"Task: {cleaned_text}, State: {state_str}"
+            start = len(tokenizer.encode(before_state, add_bos=True))
+            end = len(tokenizer.encode(through_state, add_bos=True))
+            return min(start, max_len), min(end, max_len)
+
+        if state.ndim == 1:
+            start, end = state_span_for_state(state)
+            token_mask[start:end] = False
+        else:
+            for batch_index, state_i in enumerate(state):
+                start, end = state_span_for_state(state_i)
+                token_mask[batch_index, start:end] = False
+
+        return dataclasses.replace(
+            observation,
+            tokenized_prompt_mask=token_mask,
+        )
+    if modality == "language_prompt":
+        if not state_in_prompt:
+            raise ValueError("language_prompt ablation expects a discrete-state model with state in the prompt.")
+        if prompt is None or prompt_tokenizer is None:
+            raise ValueError("language_prompt ablation requires prompt and prompt_tokenizer.")
+        if observation.tokenized_prompt_mask is None:
+            raise ValueError("Observation has no tokenized_prompt_mask to ablate.")
+
+        token_mask = np.asarray(observation.tokenized_prompt_mask, dtype=np.bool_).copy()
+        tokenizer = prompt_tokenizer._tokenizer
+        max_len = prompt_tokenizer._max_len
+        cleaned_text = prompt.strip().replace("_", " ").replace("\n", " ")
+        before_language = "Task: "
+        through_language = f"Task: {cleaned_text}"
+        start = min(len(tokenizer.encode(before_language, add_bos=True)), max_len)
+        end = min(len(tokenizer.encode(through_language, add_bos=True)), max_len)
+        if token_mask.ndim == 1:
+            token_mask[start:end] = False
+        else:
+            token_mask[:, start:end] = False
+
+        return dataclasses.replace(
+            observation,
+            tokenized_prompt_mask=token_mask,
+        )
+    raise ValueError(
+        f"Unsupported modality {modality!r}. Expected 'vision', 'tactile', 'state', or 'language_prompt'."
+    )
 
 
 def integrate_to_base_log_likelihood(
@@ -554,8 +554,7 @@ def integrate_to_base_log_likelihood(
     reference_actions: jax.Array,
     *,
     num_steps: int,
-    use_finite_difference: bool = False,
-    fd_eps: float = 1e-3,
+    t_min: float,
     loglike_fn: Any | None = None,
 ) -> LikelihoodIntegrationResult:
     """Integrate pi0 code-time from actions at t=0 to base noise at t=1.
@@ -564,27 +563,29 @@ def integrate_to_base_log_likelihood(
       x_t = t * noise + (1 - t) * actions
       v_t learns dx_t/dt = noise - actions
 
-    Therefore actions live at t=0 and the standard Gaussian base lives at t=1.
-    For dx/dt = v_t(x), log p_data(x_0|c) = log p_base(x_1) + ∫_0^1 div v_t(x_t) dt.
+    Therefore actions live near t=0 and the standard Gaussian base lives at t=1.
+    This integrates from t_min to 1 with a Heun predictor-corrector step to avoid
+    evaluating the model exactly at t=0, which is outside the training time range.
     """
 
     if num_steps <= 0:
         raise ValueError(f"num_steps must be positive, got {num_steps}")
+    if not 0.0 <= t_min < 1.0:
+        raise ValueError(f"t_min must be in [0, 1), got {t_min}")
 
     x = jnp.asarray(reference_actions, dtype=jnp.float32)
     if x.ndim == 2:
         x = x[None, ...]
     observation = _batch_observation(observation)
 
-    eps_samples = jax.random.rademacher(jax.random.key(0), (num_steps, *x.shape), dtype=x.dtype)
+    step_indices = jnp.arange(num_steps)
 
     if loglike_fn is not None:
         x_base, r_tot, log_p_base, log_likelihood = loglike_fn(
             observation,
             x,
-            eps_samples,
-            use_finite_difference=use_finite_difference,
-            fd_eps=fd_eps,
+            step_indices,
+            t_min,
         )
         return LikelihoodIntegrationResult(
             x_base=x_base,
@@ -594,25 +595,28 @@ def integrate_to_base_log_likelihood(
         )
 
     batch_size = x.shape[0]
-    dt = jnp.asarray(1.0 / num_steps, dtype=jnp.float32)
+    t_min = jnp.asarray(t_min, dtype=jnp.float32)
+    dt = (jnp.asarray(1.0, dtype=jnp.float32) - t_min) / num_steps
     context = create_velocity_context(model, observation)
 
-    def scan_body(carry, eps):
+    def scan_body(carry, _):
         x, r_tot, t = carry
-        if use_finite_difference:
-            velocity, divergence = velocity_and_fd_divergence(model, context, x, t, eps, fd_eps)
-        else:
-            velocity, divergence = velocity_and_hutchinson_divergence(model, context, x, t, eps)
-        return (x + velocity * dt, r_tot + divergence * dt, t + dt), None
+        v0, div0 = velocity_and_exact_divergence(model, context, x, t)
+        t_next = t + dt
+        x_euler = x + v0 * dt
+        v1, div1 = velocity_and_exact_divergence(model, context, x_euler, t_next)
+        x_next = x + 0.5 * (v0 + v1) * dt
+        r_next = r_tot + 0.5 * (div0 + div1) * dt
+        return (x_next, r_next, t_next), None
 
     @jax.jit
-    def run_scan(x, eps_samples):
-        t = jnp.zeros((batch_size,), dtype=jnp.float32)
+    def run_scan(x, step_indices):
+        t = jnp.full((batch_size,), t_min, dtype=jnp.float32)
         r_tot = jnp.zeros((batch_size,), dtype=jnp.float32)
-        (x, r_tot, _), _ = jax.lax.scan(scan_body, (x, r_tot, t), eps_samples)
+        (x, r_tot, _), _ = jax.lax.scan(scan_body, (x, r_tot, t), step_indices)
         return x, r_tot
 
-    x, r_tot = run_scan(x, eps_samples)
+    x, r_tot = run_scan(x, step_indices)
 
     log_p_base = standard_normal_log_prob(x)
     log_likelihood = log_p_base + r_tot
@@ -646,37 +650,38 @@ def compute_modality_contribution(
     reference_actions: jax.Array,
     *,
     modality: str,
-    blur_sigma: float,
     num_steps: int,
-    use_finite_difference: bool,
-    fd_eps: float,
+    t_min: float,
+    prompt: str | None = None,
+    prompt_tokenizer: _tokenizer.PaligemmaTokenizer | None = None,
+    state_in_prompt: bool = False,
     loglike_fn: Any | None = None,
 ) -> tuple[LikelihoodIntegrationResult, LikelihoodIntegrationResult, jax.Array]:
-    blurred_observation = blur_modality_observation(
+    ablated_observation = ablate_modality_observation(
         observation,
         modality=modality,
-        sigma=blur_sigma,
+        prompt=prompt,
+        prompt_tokenizer=prompt_tokenizer,
+        state_in_prompt=state_in_prompt,
     )
     original_result = integrate_to_base_log_likelihood(
         model,
         observation,
         reference_actions,
         num_steps=num_steps,
-        use_finite_difference=use_finite_difference,
-        fd_eps=fd_eps,
+        t_min=t_min,
         loglike_fn=loglike_fn,
     )
-    blurred_result = integrate_to_base_log_likelihood(
+    ablated_result = integrate_to_base_log_likelihood(
         model,
-        blurred_observation,
+        ablated_observation,
         reference_actions,
         num_steps=num_steps,
-        use_finite_difference=use_finite_difference,
-        fd_eps=fd_eps,
+        t_min=t_min,
         loglike_fn=loglike_fn,
     )
-    contribution = original_result.log_likelihood - blurred_result.log_likelihood
-    return original_result, blurred_result, contribution
+    contribution = original_result.log_likelihood - ablated_result.log_likelihood
+    return original_result, ablated_result, contribution
 
 
 def save_contribution_curve(
@@ -695,9 +700,9 @@ def save_contribution_curve(
                 "frame",
                 "dataset_index",
                 "original_log_likelihood",
-                "blurred_log_likelihood",
+                "ablated_log_likelihood",
                 "original_r_tot",
-                "blurred_r_tot",
+                "ablated_r_tot",
                 "delta_logp",
                 "delta_r_tot",
                 "contribution",
@@ -735,17 +740,15 @@ def save_contribution_curve(
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Estimate modality contribution by blurring selected observations.")
+    parser = argparse.ArgumentParser(description="Estimate modality contribution by attention-mask ablation.")
     parser.add_argument("--config-name", required=True)
     parser.add_argument("--checkpoint-dir", required=True)
     parser.add_argument("--episode-index", required=True)
     parser.add_argument("--frame", type=int, default=0)
     parser.add_argument("--sample-interval", type=int, default=None)
     parser.add_argument("--num-steps", "-k", type=int, default=10)
-    parser.add_argument("--finite-difference", action="store_true")
-    parser.add_argument("--fd-eps", type=float, default=1e-3)
-    parser.add_argument("--remove-modality", choices=("vision", "tactile"), default="tactile")
-    parser.add_argument("--blur-sigma", type=float, default=8.0)
+    parser.add_argument("--t-min", type=float, default=1e-3)
+    parser.add_argument("--remove-modality", choices=("vision", "tactile", "state", "language_prompt"), default="tactile")
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--output-dir", type=pathlib.Path, default=pathlib.Path("eval_outputs/loglike"))
     args = parser.parse_args(argv)
@@ -771,50 +774,56 @@ def main(argv: Sequence[str] | None = None) -> None:
     model = load_model(train_config, args.checkpoint_dir)
     if not hasattr(model, "integrate_to_base_log_likelihood"):
         raise TypeError("Optimized likelihood evaluation expects a Pi0/Pi05 model with integrate_to_base_log_likelihood.")
-    loglike_fn = nnx_utils.module_jit(
-        model.integrate_to_base_log_likelihood,
-        static_argnames=("use_finite_difference",),
+    loglike_fn = nnx_utils.module_jit(model.integrate_to_base_log_likelihood)
+    state_in_prompt = bool(getattr(train_config.model, "discrete_state_input", False))
+    prompt_tokenizer = (
+        _tokenizer.PaligemmaTokenizer(train_config.model.max_token_len)
+        if args.remove_modality in ("state", "language_prompt") and state_in_prompt
+        else None
     )
 
     print(f"loaded episode={args.episode_index} frames={len(episode.indices)} dataset_indices={episode.indices[:5]}")
     print(f"prompt={episode.prompts[0]!r}")
-    print(f"removed_modality={args.remove_modality}")
-    print(f"blur_sigma={args.blur_sigma}")
-    print(f"divergence_method={'finite_difference' if args.finite_difference else 'jvp'}")
-    if args.finite_difference:
-        print(f"fd_eps={args.fd_eps}")
+    print(f"ablated_modality={args.remove_modality}")
+    print("ablation_method=attention_mask")
+    print(f"state_in_prompt={state_in_prompt}")
+    print("divergence_method=exact_trace_autodiff")
+    print("ode_solver=heun")
+    print(f"t_min={args.t_min}")
+    print("model_dtype=bfloat16")
 
     rows = []
-    for i, (frame, dataset_index, observation, reference_actions) in enumerate(
-        zip(episode.frames, episode.indices, episode.observations, episode.actions, strict=True)
+    for i, (frame, dataset_index, observation, reference_actions, prompt) in enumerate(
+        zip(episode.frames, episode.indices, episode.observations, episode.actions, episode.prompts, strict=True)
     ):
-        original_result, blurred_result, contribution = compute_modality_contribution(
+        original_result, ablated_result, contribution = compute_modality_contribution(
             model,
             observation,
             reference_actions,
             modality=args.remove_modality,
-            blur_sigma=args.blur_sigma,
             num_steps=args.num_steps,
-            use_finite_difference=args.finite_difference,
-            fd_eps=args.fd_eps,
+            t_min=args.t_min,
+            prompt=prompt,
+            prompt_tokenizer=prompt_tokenizer,
+            state_in_prompt=state_in_prompt,
             loglike_fn=loglike_fn,
         )
         row = {
             "frame": int(frame),
             "dataset_index": int(dataset_index),
             "original_log_likelihood": _scalar(original_result.log_likelihood),
-            "blurred_log_likelihood": _scalar(blurred_result.log_likelihood),
+            "ablated_log_likelihood": _scalar(ablated_result.log_likelihood),
             "original_r_tot": _scalar(original_result.r_tot),
-            "blurred_r_tot": _scalar(blurred_result.r_tot),
-            "delta_logp": _scalar(original_result.log_p_base - blurred_result.log_p_base),
-            "delta_r_tot": _scalar(original_result.r_tot - blurred_result.r_tot),
+            "ablated_r_tot": _scalar(ablated_result.r_tot),
+            "delta_logp": _scalar(original_result.log_p_base - ablated_result.log_p_base),
+            "delta_r_tot": _scalar(original_result.r_tot - ablated_result.r_tot),
             "contribution": _scalar(contribution),
         }
         rows.append(row)
         print(
             f"frame={row['frame']} dataset_index={row['dataset_index']} "
             f"original_log_likelihood={row['original_log_likelihood']:.6f} "
-            f"blurred_log_likelihood={row['blurred_log_likelihood']:.6f} "
+            f"ablated_log_likelihood={row['ablated_log_likelihood']:.6f} "
             f"delta_logp(x_base)={row['delta_logp']:.6f} "
             f"delta_r_tot={row['delta_r_tot']:.6f}"
         )
