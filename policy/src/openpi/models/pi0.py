@@ -362,3 +362,75 @@ class Pi0(_model.BaseModel):
 
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
         return x_0
+
+    def integrate_to_base_log_likelihood(
+        self,
+        observation: _model.Observation,
+        reference_actions: _model.Actions,
+        eps_samples: at.Float[at.Array, "steps b ah ad"],
+        *,
+        use_finite_difference: bool = False,
+        fd_eps: float = 1e-3,
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        """Integrate actions to the Gaussian base while reusing the prefix KV cache.
+
+        This mirrors the fast path in ``sample_actions``: preprocess/embed the
+        observation prefix once, prefill the LLM KV cache once, then run only the
+        action suffix during the integration scan.
+        """
+
+        image_keys = self.image_keys if self.image_keys is not None else list(observation.images.keys())
+        observation = _model.preprocess_observation(None, observation, train=False, image_keys=image_keys)
+
+        x = jnp.asarray(reference_actions, dtype=jnp.float32)
+        if x.ndim == 2:
+            x = x[None, ...]
+        eps_samples = jnp.asarray(eps_samples, dtype=x.dtype)
+        batch_size = x.shape[0]
+        num_steps = eps_samples.shape[0]
+        dt = jnp.asarray(1.0 / num_steps, dtype=jnp.float32)
+
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+
+        def velocity(x_t, t):
+            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, t)
+            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+            full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
+            positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+
+            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+                [None, suffix_tokens],
+                mask=full_attn_mask,
+                positions=positions,
+                kv_cache=kv_cache,
+                adarms_cond=[None, adarms_cond],
+            )
+            assert prefix_out is None
+            return self.action_out_proj(suffix_out[:, -self.action_horizon :])
+
+        def scan_body(carry, eps):
+            x_t, r_tot, t = carry
+            if use_finite_difference:
+                v_t = velocity(x_t, t)
+                v_eps = velocity(x_t + fd_eps * eps, t)
+                divergence = jnp.sum((v_eps - v_t) * eps, axis=tuple(range(1, v_t.ndim))) / fd_eps
+            else:
+                v_t, jvp_out = jax.jvp(lambda x_in: velocity(x_in, t), (x_t,), (eps,))
+                divergence = jnp.sum(jvp_out * eps, axis=tuple(range(1, jvp_out.ndim)))
+            return (x_t + v_t * dt, r_tot + divergence * dt, t + dt), None
+
+        t0 = jnp.zeros((batch_size,), dtype=jnp.float32)
+        r_tot0 = jnp.zeros((batch_size,), dtype=jnp.float32)
+        (x_base, r_tot, _), _ = jax.lax.scan(scan_body, (x, r_tot0, t0), eps_samples)
+
+        event_dims = tuple(range(1, x_base.ndim))
+        event_size = self.action_horizon * self.action_dim
+        log_p_base = -0.5 * (
+            jnp.sum(jnp.square(x_base), axis=event_dims) + event_size * jnp.log(2.0 * jnp.pi)
+        )
+        log_likelihood = log_p_base + r_tot
+        return x_base, r_tot, log_p_base, log_likelihood

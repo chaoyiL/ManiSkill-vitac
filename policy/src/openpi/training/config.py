@@ -311,9 +311,12 @@ class TrainConfig:
 # ============================================================================
 # Training dataset names, used for repo_id. Use a tuple to train on multiple LeRobot datasets.
 DATASET_TRAIN_NAMES: tuple[str, ...] = ("black_smash_01", "black_smash_02", "black_smash_03")
+
 # Name used for asset_id, exp_name, and checkpoint directory.
 # DATASET_TRAIN_NAME: str = "black_smash_01_02_03"
-DATASET_TRAIN_NAME: str = "blue_green_red_clean_01_02"
+# DATASET_TRAIN_NAME: str = "blue_green_red_clean_01_02"
+DATASET_TRAIN_NAME: str = "white_smash_07"
+
 # LeRobot repository namespace, for example "chaoyi".
 DATASET_REPO_NAMESPACE: str = "chaoyi"
 
