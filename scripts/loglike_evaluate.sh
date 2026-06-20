@@ -9,7 +9,7 @@
 #   ./scripts/loglike_evaluate.sh CONFIG CHECKPOINT_DIR EPISODE_INDEX [extra args...]
 #
 # Extra args are passed through to eval_scripts/loglike_evaluate.py, for example:
-#   --frame 0 --sample-interval 3 --num-steps 10 --finite-difference --fd-eps 1e-3 --remove-modality tactile --blur-sigma 8.0 --max-frames 10
+#   --frame 0 --sample-interval 3 --num-steps 10 --fd-eps 1e-3 --remove-modality tactile --max-frames 10
 
 set -e
 

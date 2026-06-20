@@ -424,27 +424,23 @@ def predict_episode_velocity(
     return predict_velocity(model, observation, x, t)
 
 
-def velocity_and_exact_divergence(
+def velocity_and_fd_divergence(
     model: _model.BaseModel,
     context: VelocityContext,
     x: jax.Array,
     t: jax.Array,
+    eps: jax.Array,
+    fd_eps: float,
 ) -> tuple[jax.Array, jax.Array]:
-    """Compute velocity and exact Tr(dv/dx)."""
+    """Estimate Tr(dv/dx) with finite-difference Hutchinson."""
 
     x = jnp.asarray(x, dtype=jnp.float32)
-    batch_size = x.shape[0]
-    x_flat = jnp.reshape(x, (batch_size, -1))
-
-    def flat_velocity(x_flat_in):
-        x_in = jnp.reshape(x_flat_in, x.shape)
-        velocity = predict_velocity_with_context(model, context, x_in, t)
-        return jnp.reshape(velocity.astype(jnp.float32), x_flat.shape)
-
-    velocity_flat = flat_velocity(x_flat)
-    jac = jax.jacfwd(flat_velocity)(x_flat)
-    divergence = jnp.einsum("bebe->b", jac)
-    return jnp.reshape(velocity_flat, x.shape), divergence
+    eps = jnp.asarray(eps, dtype=jnp.float32)
+    fd_eps = jnp.asarray(fd_eps, dtype=jnp.float32)
+    velocity = predict_velocity_with_context(model, context, x, t).astype(jnp.float32)
+    velocity_eps = predict_velocity_with_context(model, context, x + fd_eps * eps, t).astype(jnp.float32)
+    divergence = jnp.sum((velocity_eps - velocity) * eps, axis=tuple(range(1, velocity.ndim))) / fd_eps
+    return velocity, divergence
 
 
 def standard_normal_log_prob(x: jax.Array) -> jax.Array:
@@ -554,7 +550,7 @@ def integrate_to_base_log_likelihood(
     reference_actions: jax.Array,
     *,
     num_steps: int,
-    t_min: float,
+    fd_eps: float,
     loglike_fn: Any | None = None,
 ) -> LikelihoodIntegrationResult:
     """Integrate pi0 code-time from actions at t=0 to base noise at t=1.
@@ -563,29 +559,27 @@ def integrate_to_base_log_likelihood(
       x_t = t * noise + (1 - t) * actions
       v_t learns dx_t/dt = noise - actions
 
-    Therefore actions live near t=0 and the standard Gaussian base lives at t=1.
-    This integrates from t_min to 1 with a Heun predictor-corrector step to avoid
-    evaluating the model exactly at t=0, which is outside the training time range.
+    Therefore actions live at t=0 and the standard Gaussian base lives at t=1.
+    This uses the fastest evaluation path: Euler integration plus one finite-difference
+    Hutchinson trace sample per step.
     """
 
     if num_steps <= 0:
         raise ValueError(f"num_steps must be positive, got {num_steps}")
-    if not 0.0 <= t_min < 1.0:
-        raise ValueError(f"t_min must be in [0, 1), got {t_min}")
 
     x = jnp.asarray(reference_actions, dtype=jnp.float32)
     if x.ndim == 2:
         x = x[None, ...]
     observation = _batch_observation(observation)
 
-    step_indices = jnp.arange(num_steps)
+    eps_samples = jax.random.rademacher(jax.random.key(0), (num_steps, *x.shape), dtype=jnp.float32)
 
     if loglike_fn is not None:
         x_base, r_tot, log_p_base, log_likelihood = loglike_fn(
             observation,
             x,
-            step_indices,
-            t_min,
+            eps_samples,
+            fd_eps,
         )
         return LikelihoodIntegrationResult(
             x_base=x_base,
@@ -595,28 +589,22 @@ def integrate_to_base_log_likelihood(
         )
 
     batch_size = x.shape[0]
-    t_min = jnp.asarray(t_min, dtype=jnp.float32)
-    dt = (jnp.asarray(1.0, dtype=jnp.float32) - t_min) / num_steps
+    dt = jnp.asarray(1.0 / num_steps, dtype=jnp.float32)
     context = create_velocity_context(model, observation)
 
-    def scan_body(carry, _):
+    def scan_body(carry, eps):
         x, r_tot, t = carry
-        v0, div0 = velocity_and_exact_divergence(model, context, x, t)
-        t_next = t + dt
-        x_euler = x + v0 * dt
-        v1, div1 = velocity_and_exact_divergence(model, context, x_euler, t_next)
-        x_next = x + 0.5 * (v0 + v1) * dt
-        r_next = r_tot + 0.5 * (div0 + div1) * dt
-        return (x_next, r_next, t_next), None
+        velocity, divergence = velocity_and_fd_divergence(model, context, x, t, eps, fd_eps)
+        return (x + velocity * dt, r_tot + divergence * dt, t + dt), None
 
     @jax.jit
-    def run_scan(x, step_indices):
-        t = jnp.full((batch_size,), t_min, dtype=jnp.float32)
+    def run_scan(x, eps_samples):
+        t = jnp.zeros((batch_size,), dtype=jnp.float32)
         r_tot = jnp.zeros((batch_size,), dtype=jnp.float32)
-        (x, r_tot, _), _ = jax.lax.scan(scan_body, (x, r_tot, t), step_indices)
+        (x, r_tot, _), _ = jax.lax.scan(scan_body, (x, r_tot, t), eps_samples)
         return x, r_tot
 
-    x, r_tot = run_scan(x, step_indices)
+    x, r_tot = run_scan(x, eps_samples)
 
     log_p_base = standard_normal_log_prob(x)
     log_likelihood = log_p_base + r_tot
@@ -651,7 +639,7 @@ def compute_modality_contribution(
     *,
     modality: str,
     num_steps: int,
-    t_min: float,
+    fd_eps: float,
     prompt: str | None = None,
     prompt_tokenizer: _tokenizer.PaligemmaTokenizer | None = None,
     state_in_prompt: bool = False,
@@ -669,7 +657,7 @@ def compute_modality_contribution(
         observation,
         reference_actions,
         num_steps=num_steps,
-        t_min=t_min,
+        fd_eps=fd_eps,
         loglike_fn=loglike_fn,
     )
     ablated_result = integrate_to_base_log_likelihood(
@@ -677,7 +665,7 @@ def compute_modality_contribution(
         ablated_observation,
         reference_actions,
         num_steps=num_steps,
-        t_min=t_min,
+        fd_eps=fd_eps,
         loglike_fn=loglike_fn,
     )
     contribution = original_result.log_likelihood - ablated_result.log_likelihood
@@ -747,7 +735,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--frame", type=int, default=0)
     parser.add_argument("--sample-interval", type=int, default=None)
     parser.add_argument("--num-steps", "-k", type=int, default=10)
-    parser.add_argument("--t-min", type=float, default=1e-3)
+    parser.add_argument("--fd-eps", type=float, default=1e-3)
     parser.add_argument("--remove-modality", choices=("vision", "tactile", "state", "language_prompt"), default="tactile")
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--output-dir", type=pathlib.Path, default=pathlib.Path("eval_outputs/loglike"))
@@ -787,9 +775,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     print(f"ablated_modality={args.remove_modality}")
     print("ablation_method=attention_mask")
     print(f"state_in_prompt={state_in_prompt}")
-    print("divergence_method=exact_trace_autodiff")
-    print("ode_solver=heun")
-    print(f"t_min={args.t_min}")
+    print("divergence_method=finite_difference_hutchinson")
+    print("ode_solver=euler")
+    print(f"fd_eps={args.fd_eps}")
     print("model_dtype=bfloat16")
 
     rows = []
@@ -802,7 +790,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             reference_actions,
             modality=args.remove_modality,
             num_steps=args.num_steps,
-            t_min=args.t_min,
+            fd_eps=args.fd_eps,
             prompt=prompt,
             prompt_tokenizer=prompt_tokenizer,
             state_in_prompt=state_in_prompt,
