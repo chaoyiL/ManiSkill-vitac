@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 import csv
 import dataclasses
+import importlib.util
 import pathlib
 import sys
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -20,25 +21,24 @@ import numpy as np
 from openpi.models import model as _model
 from openpi.models.pi0 import make_attn_mask
 from openpi.models import tokenizer as _tokenizer
-from openpi.shared import nnx_utils
-from openpi.training import checkpoints as _checkpoints
 from openpi.training import config as _config
-from openpi.training import data_loader as _data_loader
 
+DEFAULT_FD_EPS = 1e-3
 
-EPISODE_KEYS = ("episode_index", "episode_idx", "episode_id", "episode")
+_EVAL_UTILS_PATH = pathlib.Path(__file__).resolve().parent / "utils.py"
+_EVAL_UTILS_SPEC = importlib.util.spec_from_file_location("eval_scripts_utils", _EVAL_UTILS_PATH)
+if _EVAL_UTILS_SPEC is None or _EVAL_UTILS_SPEC.loader is None:
+    raise ImportError(f"Could not load eval script utilities from {_EVAL_UTILS_PATH}")
+_eval_utils = importlib.util.module_from_spec(_EVAL_UTILS_SPEC)
+sys.modules[_EVAL_UTILS_SPEC.name] = _eval_utils
+_EVAL_UTILS_SPEC.loader.exec_module(_eval_utils)
 
-
-@dataclasses.dataclass(frozen=True)
-class EpisodeData:
-    """One transformed episode, ready for model calls."""
-
-    indices: tuple[int, ...]
-    frames: tuple[int, ...]
-    raw_samples: tuple[dict[str, Any], ...]
-    observations: tuple[_model.Observation, ...]
-    actions: tuple[jax.Array, ...]
-    prompts: tuple[str | None, ...]
+EpisodeData = _eval_utils.EpisodeData
+_scalar = _eval_utils._scalar
+_add_batch_dim = _eval_utils._add_batch_dim
+ablate_modality_observation = _eval_utils.ablate_modality_observation
+load_episode = _eval_utils.load_episode
+load_model = _eval_utils.load_model
 
 
 @dataclasses.dataclass(frozen=True)
@@ -59,307 +59,6 @@ class VelocityContext:
     prefix_tokens: jax.Array
     prefix_mask: jax.Array
     kv_cache: Any
-
-
-def _as_scalar(value: Any) -> Any:
-    value = np.asarray(value)
-    if value.shape == ():
-        return value.item()
-    if value.size == 1:
-        return value.reshape(()).item()
-    return value
-
-
-def _copy_tree(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {k: _copy_tree(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return type(value)(_copy_tree(v) for v in value)
-    if hasattr(value, "copy"):
-        return value.copy()
-    return value
-
-
-def _batch_observation(observation: _model.Observation) -> _model.Observation:
-    return jax.tree.map(lambda x: jnp.asarray(x)[None, ...] if x is not None else None, observation)
-
-
-def _batch_actions(actions: Any) -> jax.Array:
-    return jnp.asarray(actions)[None, ...]
-
-
-def _prompt_from_raw(raw: dict[str, Any]) -> str | None:
-    prompt = raw.get("prompt", raw.get("task"))
-    if prompt is None:
-        return None
-    if isinstance(prompt, bytes):
-        return prompt.decode("utf-8")
-    if not isinstance(prompt, str):
-        prompt = np.asarray(prompt).item()
-    if isinstance(prompt, bytes):
-        return prompt.decode("utf-8")
-    return str(prompt)
-
-
-def _normalize_observation_dict(data: dict[str, Any]) -> dict[str, Any]:
-    """Make transformed samples compatible with Observation type checks."""
-
-    if "image_mask" in data:
-        data["image_mask"] = {key: np.asarray(value, dtype=np.bool_) for key, value in data["image_mask"].items()}
-    if "tactile_mask" in data:
-        data["tactile_mask"] = np.asarray(data["tactile_mask"], dtype=np.bool_)
-    if "tokenized_prompt_mask" in data:
-        data["tokenized_prompt_mask"] = np.asarray(data["tokenized_prompt_mask"], dtype=np.bool_)
-    return data
-
-
-def _available_keys(dataset: Any, limit: int = 1) -> list[str]:
-    keys: set[str] = set()
-    for index in range(min(limit, len(dataset))):
-        item = dataset[index]
-        if isinstance(item, dict):
-            keys.update(item.keys())
-    return sorted(keys)
-
-
-def _episode_value(raw: dict[str, Any]) -> Any | None:
-    for key in EPISODE_KEYS:
-        if key in raw:
-            return _as_scalar(raw[key])
-    return None
-
-
-def _unwrap_dataset(dataset: Any) -> Any:
-    while hasattr(dataset, "_dataset"):
-        dataset = dataset._dataset
-    return dataset
-
-
-def _indices_for_episode_from_metadata(raw_dataset: Any, episode_index: int | str) -> tuple[int, ...] | None:
-    try:
-        episode_index = int(episode_index)
-    except (TypeError, ValueError):
-        return None
-
-    dataset = _unwrap_dataset(raw_dataset)
-    episode_data_index = getattr(dataset, "episode_data_index", None)
-    if episode_data_index is None:
-        return None
-    if "from" not in episode_data_index or "to" not in episode_data_index:
-        return None
-
-    starts = episode_data_index["from"]
-    ends = episode_data_index["to"]
-    if episode_index < 0 or episode_index >= len(starts):
-        raise ValueError(
-            f"Episode {episode_index} is out of range for this dataset. "
-            f"Available episode indices are 0..{len(starts) - 1}."
-        )
-
-    start = int(np.asarray(starts[episode_index]))
-    end = int(np.asarray(ends[episode_index]))
-    if end <= start:
-        return None
-    return tuple(range(start, end))
-
-
-def _indices_for_episode(raw_dataset: Any, episode_index: int | str) -> tuple[int, ...]:
-    metadata_indices = _indices_for_episode_from_metadata(raw_dataset, episode_index)
-    if metadata_indices is not None:
-        return metadata_indices
-
-    wanted: Any = episode_index
-    try:
-        wanted = int(episode_index)
-    except (TypeError, ValueError):
-        pass
-
-    indices = []
-    saw_episode_key = False
-    for index in range(len(raw_dataset)):
-        raw = raw_dataset[index]
-        if not isinstance(raw, dict):
-            continue
-        current = _episode_value(raw)
-        if current is None:
-            continue
-        saw_episode_key = True
-        if current == wanted or str(current) == str(wanted):
-            indices.append(index)
-
-    if indices:
-        return tuple(indices)
-
-    keys = _available_keys(raw_dataset, limit=min(10, len(raw_dataset)))
-    if not saw_episode_key:
-        raise ValueError(
-            "Could not find an episode field in dataset samples. "
-            f"Tried {EPISODE_KEYS}; first sample keys include: {keys}"
-        )
-    raise ValueError(f"Episode {episode_index!r} was not found in dataset.")
-
-
-def create_transformed_dataset(
-    train_config: _config.TrainConfig,
-    checkpoint_dir: str | pathlib.Path,
-) -> tuple[_config.DataConfig, _data_loader.Dataset, _data_loader.Dataset]:
-    """Build raw and transformed datasets with the same transforms as training."""
-
-    checkpoint_dir = pathlib.Path(checkpoint_dir)
-    assets_dir = checkpoint_dir / "assets"
-    if not assets_dir.exists() and checkpoint_dir.name == "params":
-        assets_dir = checkpoint_dir.parent / "assets"
-    data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
-    dataset_name = getattr(_config, "DATASET_TRAIN_NAME")
-    dataset_namespace = getattr(_config, "DATASET_REPO_NAMESPACE")
-    asset_id = data_config.asset_id or dataset_name
-    data_config = dataclasses.replace(
-        data_config,
-        repo_id=f"{dataset_namespace}/{dataset_name}",
-        asset_id=asset_id,
-        norm_stats=_checkpoints.load_norm_stats(assets_dir, asset_id),
-    )
-    raw_dataset = _data_loader.create_torch_dataset(
-        data_config,
-        action_horizon=train_config.model.action_horizon,
-        model_config=train_config.model,
-    )
-    transformed_dataset = _data_loader.transform_dataset(
-        raw_dataset,
-        data_config,
-    )
-    return data_config, raw_dataset, transformed_dataset
-
-
-def load_episode(
-    train_config: _config.TrainConfig,
-    checkpoint_dir: str | pathlib.Path,
-    episode_index: int | str,
-    *,
-    start_frame: int = 0,
-    sample_interval: int | None = None,
-    max_frames: int | None = None,
-    frame_indices: Sequence[int] | None = None,
-) -> EpisodeData:
-    """Load one episode and return observations, language prompts, and actions."""
-
-    _, raw_dataset, transformed_dataset = create_transformed_dataset(train_config, checkpoint_dir)
-    indices = _indices_for_episode(raw_dataset, episode_index)
-    if max_frames is not None:
-        indices = indices[:max_frames]
-    if frame_indices is not None and sample_interval is not None:
-        raise ValueError("frame_indices and sample_interval cannot both be set.")
-    if sample_interval is not None:
-        if sample_interval <= 0:
-            raise ValueError(f"sample_interval must be positive, got {sample_interval}")
-        frame_indices = tuple(range(start_frame, len(indices), sample_interval))
-    elif frame_indices is None:
-        frame_indices = tuple(range(len(indices)))
-
-    relative_frames = []
-    if frame_indices is not None:
-        selected_indices = []
-        for frame_index in frame_indices:
-            if frame_index < 0 or frame_index >= len(indices):
-                raise ValueError(
-                    f"Frame {frame_index} is out of range for episode {episode_index}; "
-                    f"available relative frames are 0..{len(indices) - 1}."
-                )
-            selected_indices.append(indices[frame_index])
-            relative_frames.append(frame_index)
-        indices = tuple(selected_indices)
-    if not indices:
-        raise ValueError(f"No frames selected for episode {episode_index}.")
-
-    raw_samples = []
-    observations = []
-    actions = []
-    prompts = []
-    for index in indices:
-        raw = raw_dataset[index]
-        transformed = _copy_tree(transformed_dataset[index])
-        transformed = _normalize_observation_dict(transformed)
-        raw_samples.append(raw)
-        observations.append(_model.Observation.from_dict(transformed))
-        actions.append(jnp.asarray(transformed["actions"]))
-        prompts.append(_prompt_from_raw(raw))
-
-    return EpisodeData(
-        indices=tuple(indices),
-        frames=tuple(relative_frames),
-        raw_samples=tuple(raw_samples),
-        observations=tuple(observations),
-        actions=tuple(actions),
-        prompts=tuple(prompts),
-    )
-
-
-def load_model(train_config: _config.TrainConfig, checkpoint_dir: str | pathlib.Path):
-    """Load a pi0/pi05 model from a checkpoint step directory or its params subdir."""
-
-    checkpoint_dir = pathlib.Path(checkpoint_dir)
-    params_dir = checkpoint_dir if checkpoint_dir.name == "params" else checkpoint_dir / "params"
-    if not params_dir.exists():
-        raise FileNotFoundError(f"Checkpoint params directory not found: {params_dir}")
-    params = _model.restore_params(params_dir, dtype=jnp.bfloat16)
-    model_config = train_config.model
-    if hasattr(model_config, "dtype"):
-        model_config = dataclasses.replace(model_config, dtype="bfloat16")
-    try:
-        model = model_config.load(params)
-    except ValueError as exc:
-        message = str(exc)
-        if "anytouch" in message or "tactile_proj" in message:
-            raise ValueError(
-                "Checkpoint/model config mismatch: the selected config expects tactile AnyTouch parameters "
-                "(`anytouch` and `tactile_proj`), but this checkpoint does not contain them. "
-                "Use a checkpoint trained with `pi05_bi_vitac` tactile support, or use the matching visual-only "
-                "config/checkpoint. Tactile contribution cannot be evaluated from a checkpoint without tactile "
-                f"parameters. Params path: {params_dir}"
-            ) from exc
-        raise
-    model.eval()
-    return model
-
-
-def predict_velocity(
-    model: _model.BaseModel,
-    observation: _model.Observation,
-    x: jax.Array,
-    t: jax.Array | float,
-) -> jax.Array:
-    """Compute one flow velocity v(x, t, o), following Pi0.sample_actions."""
-
-    if not hasattr(model, "embed_prefix") or not hasattr(model, "embed_suffix"):
-        raise TypeError("predict_velocity currently expects a Pi0/Pi05-style model.")
-
-    observation = _model.preprocess_observation(
-        None,
-        observation,
-        train=False,
-        image_keys=model.image_keys if model.image_keys is not None else list(observation.images.keys()),
-    )
-    batch_size = observation.state.shape[0]
-    x = jnp.asarray(x)
-    if x.ndim == 2:
-        x = x[None, ...]
-    t = jnp.asarray(t, dtype=jnp.float32)
-    if t.ndim == 0:
-        t = jnp.broadcast_to(t, (batch_size,))
-
-    prefix_tokens, prefix_mask, prefix_ar_mask = model.embed_prefix(observation)
-    suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = model.embed_suffix(observation, x, t)
-    input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
-    ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
-    attn_mask = make_attn_mask(input_mask, ar_mask)
-    positions = jnp.cumsum(input_mask, axis=1) - 1
-    _, suffix_out = model.PaliGemma.llm(
-        [prefix_tokens, suffix_tokens],
-        mask=attn_mask,
-        positions=positions,
-        adarms_cond=[None, adarms_cond],
-    )[0]
-    return model.action_out_proj(suffix_out[:, -model.action_horizon :])
 
 
 def create_velocity_context(model: _model.BaseModel, observation: _model.Observation) -> VelocityContext:
@@ -407,40 +106,33 @@ def predict_velocity_with_context(
     return model.action_out_proj(suffix_out[:, -model.action_horizon :])
 
 
-def predict_episode_velocity(
-    model: _model.BaseModel,
-    episode: EpisodeData,
-    *,
-    frame: int = 0,
-    t: float = 0.5,
-    x: jax.Array | None = None,
-) -> jax.Array:
-    """Convenience wrapper for a single frame in a loaded episode."""
-
-    observation = _batch_observation(episode.observations[frame])
-    actions = _batch_actions(episode.actions[frame])
-    if x is None:
-        x = actions
-    return predict_velocity(model, observation, x, t)
-
-
-def velocity_and_fd_divergence(
+def velocity_and_fd_coordinate_trace(
     model: _model.BaseModel,
     context: VelocityContext,
     x: jax.Array,
     t: jax.Array,
-    eps: jax.Array,
     fd_eps: float,
 ) -> tuple[jax.Array, jax.Array]:
-    """Estimate Tr(dv/dx) with finite-difference Hutchinson."""
+    """Finite-difference the diagonal Jacobian terms without Hutchinson sampling."""
 
     x = jnp.asarray(x, dtype=jnp.float32)
-    eps = jnp.asarray(eps, dtype=jnp.float32)
     fd_eps = jnp.asarray(fd_eps, dtype=jnp.float32)
     velocity = predict_velocity_with_context(model, context, x, t).astype(jnp.float32)
-    velocity_eps = predict_velocity_with_context(model, context, x + fd_eps * eps, t).astype(jnp.float32)
-    divergence = jnp.sum((velocity_eps - velocity) * eps, axis=tuple(range(1, velocity.ndim))) / fd_eps
-    return velocity, divergence
+    batch_size = x.shape[0]
+    event_size = int(np.prod(x.shape[1:]))
+    flat_shape = (batch_size, event_size)
+    velocity_flat = velocity.reshape(flat_shape)
+
+    def scan_body(trace: jax.Array, index: jax.Array) -> tuple[jax.Array, None]:
+        direction = jax.nn.one_hot(index, event_size, dtype=jnp.float32)
+        direction_x = jnp.broadcast_to(direction.reshape((1, *x.shape[1:])), x.shape)
+        velocity_eps = predict_velocity_with_context(model, context, x + fd_eps * direction_x, t).astype(jnp.float32)
+        diagonal = (velocity_eps.reshape(flat_shape)[:, index] - velocity_flat[:, index]) / fd_eps
+        return trace + diagonal, None
+
+    trace0 = jnp.zeros((batch_size,), dtype=jnp.float32)
+    trace, _ = jax.lax.scan(scan_body, trace0, jnp.arange(event_size, dtype=jnp.int32))
+    return velocity, trace
 
 
 def standard_normal_log_prob(x: jax.Array) -> jax.Array:
@@ -451,107 +143,13 @@ def standard_normal_log_prob(x: jax.Array) -> jax.Array:
     return -0.5 * (jnp.sum(jnp.square(x), axis=event_dims) + event_size * jnp.log(2.0 * jnp.pi))
 
 
-def ablate_modality_observation(
-    observation: _model.Observation,
-    *,
-    modality: str,
-    prompt: str | None = None,
-    prompt_tokenizer: _tokenizer.PaligemmaTokenizer | None = None,
-    state_in_prompt: bool = False,
-) -> _model.Observation:
-    if modality == "vision":
-        if not observation.images:
-            raise ValueError("Observation has no visual images to ablate.")
-        return dataclasses.replace(
-            observation,
-            image_masks={
-                key: np.zeros_like(np.asarray(observation.image_masks.get(key, False)), dtype=np.bool_)
-                for key in observation.images
-            },
-        )
-    if modality == "tactile":
-        if observation.tactile is None:
-            raise ValueError("Observation has no tactile field to ablate.")
-        tactile_mask = observation.tactile_mask
-        if tactile_mask is None:
-            tactile_mask = False
-        return dataclasses.replace(
-            observation,
-            tactile_mask=np.zeros_like(np.asarray(tactile_mask), dtype=np.bool_),
-        )
-    if modality == "state":
-        if not state_in_prompt:
-            raise ValueError("state ablation expects a discrete-state model with state in the prompt.")
-        if prompt is None or prompt_tokenizer is None:
-            raise ValueError("state ablation requires prompt and prompt_tokenizer.")
-        if observation.tokenized_prompt_mask is None:
-            raise ValueError("Observation has no tokenized_prompt_mask to ablate.")
-
-        state = np.asarray(observation.state)
-        token_mask = np.asarray(observation.tokenized_prompt_mask, dtype=np.bool_).copy()
-        tokenizer = prompt_tokenizer._tokenizer
-        max_len = prompt_tokenizer._max_len
-        cleaned_text = prompt.strip().replace("_", " ").replace("\n", " ")
-
-        def state_span_for_state(state_i: np.ndarray) -> tuple[int, int]:
-            discretized_state = np.digitize(state_i, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
-            state_str = " ".join(map(str, discretized_state))
-            before_state = f"Task: {cleaned_text}, State: "
-            through_state = f"Task: {cleaned_text}, State: {state_str}"
-            start = len(tokenizer.encode(before_state, add_bos=True))
-            end = len(tokenizer.encode(through_state, add_bos=True))
-            return min(start, max_len), min(end, max_len)
-
-        if state.ndim == 1:
-            start, end = state_span_for_state(state)
-            token_mask[start:end] = False
-        else:
-            for batch_index, state_i in enumerate(state):
-                start, end = state_span_for_state(state_i)
-                token_mask[batch_index, start:end] = False
-
-        return dataclasses.replace(
-            observation,
-            tokenized_prompt_mask=token_mask,
-        )
-    if modality == "language_prompt":
-        if not state_in_prompt:
-            raise ValueError("language_prompt ablation expects a discrete-state model with state in the prompt.")
-        if prompt is None or prompt_tokenizer is None:
-            raise ValueError("language_prompt ablation requires prompt and prompt_tokenizer.")
-        if observation.tokenized_prompt_mask is None:
-            raise ValueError("Observation has no tokenized_prompt_mask to ablate.")
-
-        token_mask = np.asarray(observation.tokenized_prompt_mask, dtype=np.bool_).copy()
-        tokenizer = prompt_tokenizer._tokenizer
-        max_len = prompt_tokenizer._max_len
-        cleaned_text = prompt.strip().replace("_", " ").replace("\n", " ")
-        before_language = "Task: "
-        through_language = f"Task: {cleaned_text}"
-        start = min(len(tokenizer.encode(before_language, add_bos=True)), max_len)
-        end = min(len(tokenizer.encode(through_language, add_bos=True)), max_len)
-        if token_mask.ndim == 1:
-            token_mask[start:end] = False
-        else:
-            token_mask[:, start:end] = False
-
-        return dataclasses.replace(
-            observation,
-            tokenized_prompt_mask=token_mask,
-        )
-    raise ValueError(
-        f"Unsupported modality {modality!r}. Expected 'vision', 'tactile', 'state', or 'language_prompt'."
-    )
-
-
 def integrate_to_base_log_likelihood(
     model: _model.BaseModel,
     observation: _model.Observation,
     reference_actions: jax.Array,
     *,
     num_steps: int,
-    fd_eps: float,
-    loglike_fn: Any | None = None,
+    fd_eps: float = DEFAULT_FD_EPS,
 ) -> LikelihoodIntegrationResult:
     """Integrate pi0 code-time from actions at t=0 to base noise at t=1.
 
@@ -560,8 +158,8 @@ def integrate_to_base_log_likelihood(
       v_t learns dx_t/dt = noise - actions
 
     Therefore actions live at t=0 and the standard Gaussian base lives at t=1.
-    This uses the fastest evaluation path: Euler integration plus one finite-difference
-    Hutchinson trace sample per step.
+    ``sample_actions`` denoises from t=1 to t=0 with negative dt, so this likelihood
+    path uses positive dt to map data actions back to the Gaussian base.
     """
 
     if num_steps <= 0:
@@ -570,41 +168,26 @@ def integrate_to_base_log_likelihood(
     x = jnp.asarray(reference_actions, dtype=jnp.float32)
     if x.ndim == 2:
         x = x[None, ...]
-    observation = _batch_observation(observation)
-
-    eps_samples = jax.random.rademacher(jax.random.key(0), (num_steps, *x.shape), dtype=jnp.float32)
-
-    if loglike_fn is not None:
-        x_base, r_tot, log_p_base, log_likelihood = loglike_fn(
-            observation,
-            x,
-            eps_samples,
-            fd_eps,
-        )
-        return LikelihoodIntegrationResult(
-            x_base=x_base,
-            r_tot=r_tot,
-            log_p_base=log_p_base,
-            log_likelihood=log_likelihood,
-        )
+    observation = _add_batch_dim(observation)
 
     batch_size = x.shape[0]
     dt = jnp.asarray(1.0 / num_steps, dtype=jnp.float32)
     context = create_velocity_context(model, observation)
+    step_indices = jnp.arange(num_steps, dtype=jnp.float32)
 
-    def scan_body(carry, eps):
+    def scan_body(carry, _):
         x, r_tot, t = carry
-        velocity, divergence = velocity_and_fd_divergence(model, context, x, t, eps, fd_eps)
+        velocity, divergence = velocity_and_fd_coordinate_trace(model, context, x, t, fd_eps)
         return (x + velocity * dt, r_tot + divergence * dt, t + dt), None
 
     @jax.jit
-    def run_scan(x, eps_samples):
+    def run_scan(x, step_indices):
         t = jnp.zeros((batch_size,), dtype=jnp.float32)
         r_tot = jnp.zeros((batch_size,), dtype=jnp.float32)
-        (x, r_tot, _), _ = jax.lax.scan(scan_body, (x, r_tot, t), eps_samples)
+        (x, r_tot, _), _ = jax.lax.scan(scan_body, (x, r_tot, t), step_indices)
         return x, r_tot
 
-    x, r_tot = run_scan(x, eps_samples)
+    x, r_tot = run_scan(x, step_indices)
 
     log_p_base = standard_normal_log_prob(x)
     log_likelihood = log_p_base + r_tot
@@ -616,22 +199,6 @@ def integrate_to_base_log_likelihood(
     )
 
 
-def _tree_summary(prefix: str, tree: Any) -> Iterable[str]:
-    if isinstance(tree, dict):
-        for key, value in tree.items():
-            yield from _tree_summary(f"{prefix}.{key}" if prefix else key, value)
-        return
-    if tree is None:
-        yield f"{prefix}: None"
-        return
-    array = np.asarray(tree)
-    yield f"{prefix}: shape={array.shape}, dtype={array.dtype}"
-
-
-def _scalar(value: Any) -> float:
-    return float(np.asarray(jax.device_get(value)).reshape(-1)[0])
-
-
 def compute_modality_contribution(
     model: _model.BaseModel,
     observation: _model.Observation,
@@ -639,11 +206,10 @@ def compute_modality_contribution(
     *,
     modality: str,
     num_steps: int,
-    fd_eps: float,
+    fd_eps: float = DEFAULT_FD_EPS,
     prompt: str | None = None,
     prompt_tokenizer: _tokenizer.PaligemmaTokenizer | None = None,
     state_in_prompt: bool = False,
-    loglike_fn: Any | None = None,
 ) -> tuple[LikelihoodIntegrationResult, LikelihoodIntegrationResult, jax.Array]:
     ablated_observation = ablate_modality_observation(
         observation,
@@ -658,7 +224,6 @@ def compute_modality_contribution(
         reference_actions,
         num_steps=num_steps,
         fd_eps=fd_eps,
-        loglike_fn=loglike_fn,
     )
     ablated_result = integrate_to_base_log_likelihood(
         model,
@@ -666,7 +231,6 @@ def compute_modality_contribution(
         reference_actions,
         num_steps=num_steps,
         fd_eps=fd_eps,
-        loglike_fn=loglike_fn,
     )
     contribution = original_result.log_likelihood - ablated_result.log_likelihood
     return original_result, ablated_result, contribution
@@ -729,15 +293,15 @@ def save_contribution_curve(
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Estimate modality contribution by attention-mask ablation.")
-    parser.add_argument("--config-name", required=True)
-    parser.add_argument("--checkpoint-dir", required=True)
-    parser.add_argument("--episode-index", required=True)
+    parser.add_argument("--config-name", default="pi05_bi_vitac")
+    parser.add_argument("--checkpoint-dir", default="/home/rvsa/codehub/ManiSkill-vitac/checkpoints/11999")
+    parser.add_argument("--episode-index", default=10)
     parser.add_argument("--frame", type=int, default=0)
-    parser.add_argument("--sample-interval", type=int, default=None)
+    parser.add_argument("--sample-interval", type=int, default=3)
     parser.add_argument("--num-steps", "-k", type=int, default=10)
-    parser.add_argument("--fd-eps", type=float, default=1e-3)
-    parser.add_argument("--remove-modality", choices=("vision", "tactile", "state", "language_prompt"), default="tactile")
-    parser.add_argument("--max-frames", type=int, default=None)
+    parser.add_argument("--fd-eps", type=float, default=DEFAULT_FD_EPS, help="Finite-difference step for divergence.")
+    parser.add_argument("--remove-modality", choices=("vision", "tactile", "state", "language_prompt"), default="state")
+    parser.add_argument("--max-frames", type=int, default=1)
     parser.add_argument("--output-dir", type=pathlib.Path, default=pathlib.Path("eval_outputs/loglike"))
     args = parser.parse_args(argv)
 
@@ -760,9 +324,6 @@ def main(argv: Sequence[str] | None = None) -> None:
             max_frames=args.max_frames,
         )
     model = load_model(train_config, args.checkpoint_dir)
-    if not hasattr(model, "integrate_to_base_log_likelihood"):
-        raise TypeError("Optimized likelihood evaluation expects a Pi0/Pi05 model with integrate_to_base_log_likelihood.")
-    loglike_fn = nnx_utils.module_jit(model.integrate_to_base_log_likelihood)
     state_in_prompt = bool(getattr(train_config.model, "discrete_state_input", False))
     prompt_tokenizer = (
         _tokenizer.PaligemmaTokenizer(train_config.model.max_token_len)
@@ -775,9 +336,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     print(f"ablated_modality={args.remove_modality}")
     print("ablation_method=attention_mask")
     print(f"state_in_prompt={state_in_prompt}")
-    print("divergence_method=finite_difference_hutchinson")
+    print("divergence_method=fd_coordinate_trace")
+    print(f"fd_eps={args.fd_eps:g}")
     print("ode_solver=euler")
-    print(f"fd_eps={args.fd_eps}")
     print("model_dtype=bfloat16")
 
     rows = []
@@ -790,11 +351,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             reference_actions,
             modality=args.remove_modality,
             num_steps=args.num_steps,
-            fd_eps=args.fd_eps,
             prompt=prompt,
             prompt_tokenizer=prompt_tokenizer,
             state_in_prompt=state_in_prompt,
-            loglike_fn=loglike_fn,
+            fd_eps=args.fd_eps,
         )
         row = {
             "frame": int(frame),

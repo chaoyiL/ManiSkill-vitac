@@ -25,24 +25,24 @@ HF_DATASET_CACHE_DIR="${1:-${HF_DATASET_CACHE_DIR:-${HOME}/.cache/huggingface/da
 # ====================================================
 
 DATASETS=(
-    green_clean_01
-    green_clean_02
-    green_clean_03
-    green_clean_04
-    blue_clean_01
-    blue_clean_02
-    blue_clean_03
-    blue_clean_04
-    blue_clean_05
-    red_clean_01
-    red_clean_02
-    red_clean_03
-    red_clean_04
-    green_clean_fix_01
-    blue_clean_fix_01
-    blue_clean_fix_02
-    red_clean_fix_01
-    red_clean_fix_02
+    # green_clean_01
+    # green_clean_02
+    # green_clean_03
+    green_clean_05
+    # blue_clean_01
+    # blue_clean_02
+    # blue_clean_03
+    # blue_clean_04
+    # blue_clean_05
+    # red_clean_01
+    # red_clean_02
+    # red_clean_03
+    # red_clean_04
+    # green_clean_fix_01
+    # blue_clean_fix_01
+    # blue_clean_fix_02
+    # red_clean_fix_01
+    # red_clean_fix_02
 )
 
 log() {

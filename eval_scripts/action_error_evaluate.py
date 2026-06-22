@@ -22,7 +22,15 @@ from openpi.models import tokenizer as _tokenizer
 from openpi.shared import nnx_utils
 from openpi.training import config as _config
 
-import loglike_evaluate as _loglike
+from utils import (
+    EpisodeData,
+    _scalar,
+    _batch_observation,
+    _batch_actions,
+    ablate_modality_observation,
+    load_episode,
+    load_model,
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -31,10 +39,6 @@ class ActionErrorResult:
     mse: jax.Array
     rmse: jax.Array
     mae: jax.Array
-
-
-def _scalar(value: Any) -> float:
-    return float(np.asarray(jax.device_get(value)).reshape(-1)[0])
 
 
 def _prediction_error(predicted_actions: jax.Array, reference_actions: jax.Array) -> ActionErrorResult:
@@ -70,9 +74,9 @@ def evaluate_modality_error_change(
     error change isolates the modality mask as much as possible.
     """
 
-    original_observation = _loglike._batch_observation(observation)
-    ablated_observation = _loglike._batch_observation(
-        _loglike.ablate_modality_observation(
+    original_observation = _batch_observation(observation)
+    ablated_observation = _batch_observation(
+        ablate_modality_observation(
             observation,
             modality=modality,
             prompt=prompt,
@@ -80,7 +84,7 @@ def evaluate_modality_error_change(
             state_in_prompt=state_in_prompt,
         )
     )
-    reference_actions = _loglike._batch_actions(reference_actions).astype(jnp.float32)
+    reference_actions = _batch_actions(reference_actions).astype(jnp.float32)
     noise = jax.random.normal(rng, reference_actions.shape, dtype=jnp.float32)
 
     original_actions = sample_actions_fn(
@@ -163,21 +167,21 @@ def save_error_curve(
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Evaluate modality contribution via action prediction error change.")
-    parser.add_argument("--config-name", required=True)
-    parser.add_argument("--checkpoint-dir", required=True)
-    parser.add_argument("--episode-index", required=True)
+    parser.add_argument("--config-name", default="pi05_bi_vitac")
+    parser.add_argument("--checkpoint-dir", default="/home/rvsa/codehub/ManiSkill-vitac/checkpoints/11999")
+    parser.add_argument("--episode-index", default=10)
     parser.add_argument("--frame", type=int, default=0)
-    parser.add_argument("--sample-interval", type=int, default=None)
+    parser.add_argument("--sample-interval", type=int, default=3)
     parser.add_argument("--num-steps", "-k", type=int, default=10)
-    parser.add_argument("--remove-modality", choices=("vision", "tactile", "state", "language_prompt"), default="tactile")
-    parser.add_argument("--max-frames", type=int, default=None)
+    parser.add_argument("--remove-modality", choices=("vision", "tactile", "state", "language_prompt"), default="vision")
+    parser.add_argument("--max-frames", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output-dir", type=pathlib.Path, default=pathlib.Path("eval_outputs/action_error"))
     args = parser.parse_args(argv)
 
     train_config = _config.get_config(args.config_name)
     if args.sample_interval is None:
-        episode = _loglike.load_episode(
+        episode = load_episode(
             train_config,
             args.checkpoint_dir,
             args.episode_index,
@@ -185,7 +189,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             frame_indices=(args.frame,),
         )
     else:
-        episode = _loglike.load_episode(
+        episode = load_episode(
             train_config,
             args.checkpoint_dir,
             args.episode_index,
@@ -194,7 +198,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             max_frames=args.max_frames,
         )
 
-    model = _loglike.load_model(train_config, args.checkpoint_dir)
+    model = load_model(train_config, args.checkpoint_dir)
     sample_actions_fn = nnx_utils.module_jit(model.sample_actions)
     state_in_prompt = bool(getattr(train_config.model, "discrete_state_input", False))
     prompt_tokenizer = (

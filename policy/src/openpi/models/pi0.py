@@ -367,14 +367,14 @@ class Pi0(_model.BaseModel):
         self,
         observation: _model.Observation,
         reference_actions: _model.Actions,
-        eps_samples: at.Float[at.Array, "steps b ah ad"],
-        fd_eps: float = 1e-3,
+        step_indices: at.Float[at.Array, "steps"],
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         """Integrate actions to the Gaussian base while reusing the prefix KV cache.
 
         This mirrors the fast path in ``sample_actions``: preprocess/embed the
         observation prefix once, prefill the LLM KV cache once, then run only the
-        action suffix during the integration scan.
+        action suffix during the integration scan. The log-density correction sums
+        exact coordinate JVPs, avoiding a materialized full Jacobian.
         """
 
         image_keys = self.image_keys if self.image_keys is not None else list(observation.images.keys())
@@ -383,11 +383,10 @@ class Pi0(_model.BaseModel):
         x = jnp.asarray(reference_actions, dtype=jnp.float32)
         if x.ndim == 2:
             x = x[None, ...]
-        eps_samples = jnp.asarray(eps_samples, dtype=jnp.float32)
+        step_indices = jnp.asarray(step_indices, dtype=jnp.float32)
         batch_size = x.shape[0]
-        num_steps = eps_samples.shape[0]
+        num_steps = step_indices.shape[0]
         dt = jnp.asarray(1.0 / num_steps, dtype=jnp.float32)
-        fd_eps = jnp.asarray(fd_eps, dtype=jnp.float32)
 
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
@@ -411,19 +410,37 @@ class Pi0(_model.BaseModel):
             assert prefix_out is None
             return self.action_out_proj(suffix_out[:, -self.action_horizon :]).astype(jnp.float32)
 
-        def scan_body(carry, eps):
+        event_size = self.action_horizon * self.action_dim
+        flat_shape = (batch_size, event_size)
+
+        def exact_divergence(x_t, t):
+            x_shape = x_t.shape
+            flat_x = x_t.reshape(flat_shape)
+
+            def flat_velocity(x_flat):
+                return velocity(x_flat.reshape(x_shape), t).reshape(flat_shape)
+
+            def trace_coordinate(trace, index):
+                direction = jax.nn.one_hot(index, event_size, dtype=jnp.float32)
+                tangent = jnp.broadcast_to(direction[None, :], flat_shape)
+                _, tangent_out = jax.jvp(flat_velocity, (flat_x,), (tangent,))
+                return trace + tangent_out[:, index], None
+
+            trace0 = jnp.zeros((batch_size,), dtype=jnp.float32)
+            trace, _ = jax.lax.scan(trace_coordinate, trace0, jnp.arange(event_size, dtype=jnp.int32))
+            return trace
+
+        def scan_body(carry, _):
             x_t, r_tot, t = carry
             v_t = velocity(x_t, t)
-            v_eps = velocity(x_t + fd_eps * eps, t)
-            divergence = jnp.sum((v_eps - v_t) * eps, axis=tuple(range(1, v_t.ndim))) / fd_eps
+            divergence = exact_divergence(x_t, t)
             return (x_t + v_t * dt, r_tot + divergence * dt, t + dt), None
 
         t0 = jnp.zeros((batch_size,), dtype=jnp.float32)
         r_tot0 = jnp.zeros((batch_size,), dtype=jnp.float32)
-        (x_base, r_tot, _), _ = jax.lax.scan(scan_body, (x, r_tot0, t0), eps_samples)
+        (x_base, r_tot, _), _ = jax.lax.scan(scan_body, (x, r_tot0, t0), step_indices)
 
         event_dims = tuple(range(1, x_base.ndim))
-        event_size = self.action_horizon * self.action_dim
         log_p_base = -0.5 * (
             jnp.sum(jnp.square(x_base), axis=event_dims) + event_size * jnp.log(2.0 * jnp.pi)
         )
