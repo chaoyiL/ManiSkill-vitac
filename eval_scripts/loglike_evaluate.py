@@ -23,7 +23,8 @@ from openpi.models.pi0 import make_attn_mask
 from openpi.models import tokenizer as _tokenizer
 from openpi.training import config as _config
 
-DEFAULT_FD_EPS = 1e-3
+DEFAULT_HUTCHINSON_SAMPLES = 1
+DEFAULT_HUTCHINSON_SEED = 0
 
 _EVAL_UTILS_PATH = pathlib.Path(__file__).resolve().parent / "utils.py"
 _EVAL_UTILS_SPEC = importlib.util.spec_from_file_location("eval_scripts_utils", _EVAL_UTILS_PATH)
@@ -59,6 +60,61 @@ class VelocityContext:
     prefix_tokens: jax.Array
     prefix_mask: jax.Array
     kv_cache: Any
+
+    def tree_flatten(self):
+        return ((self.observation, self.prefix_tokens, self.prefix_mask, self.kv_cache), None)
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        del aux_data
+        return cls(*children)
+
+
+jax.tree_util.register_pytree_node_class(VelocityContext)
+
+
+_RUN_SCAN_CACHE: dict[tuple[int, int, int, int, int], Any] = {}
+
+
+def _get_likelihood_scan(
+    model: _model.BaseModel,
+    *,
+    batch_size: int,
+    num_steps: int,
+    hutchinson_samples: int,
+    hutchinson_seed: int,
+):
+    """Return a cached compiled scan so observations are not captured as constants."""
+
+    cache_key = (id(model), batch_size, num_steps, hutchinson_samples, hutchinson_seed)
+    if cache_key in _RUN_SCAN_CACHE:
+        return _RUN_SCAN_CACHE[cache_key]
+
+    dt = jnp.asarray(1.0 / num_steps, dtype=jnp.float32)
+    rng_key = jax.random.PRNGKey(hutchinson_seed)
+
+    @jax.jit
+    def run_scan(context: VelocityContext, x: jax.Array, step_indices: jax.Array):
+        def scan_body(carry, step_index):
+            x, r_tot, t = carry
+            step_rng_key = jax.random.fold_in(rng_key, step_index)
+            velocity, divergence = velocity_and_hutchinson_trace(
+                model,
+                context,
+                x,
+                t,
+                step_rng_key,
+                num_samples=hutchinson_samples,
+            )
+            return (x + velocity * dt, r_tot + divergence * dt, t + dt), None
+
+        t = jnp.zeros((batch_size,), dtype=jnp.float32)
+        r_tot = jnp.zeros((batch_size,), dtype=jnp.float32)
+        (x, r_tot, _), _ = jax.lax.scan(scan_body, (x, r_tot, t), step_indices)
+        return x, r_tot
+
+    _RUN_SCAN_CACHE[cache_key] = run_scan
+    return run_scan
 
 
 def create_velocity_context(model: _model.BaseModel, observation: _model.Observation) -> VelocityContext:
@@ -106,32 +162,40 @@ def predict_velocity_with_context(
     return model.action_out_proj(suffix_out[:, -model.action_horizon :])
 
 
-def velocity_and_fd_coordinate_trace(
+def velocity_and_hutchinson_trace(
     model: _model.BaseModel,
     context: VelocityContext,
     x: jax.Array,
     t: jax.Array,
-    fd_eps: float,
+    rng_key: jax.Array,
+    *,
+    num_samples: int,
 ) -> tuple[jax.Array, jax.Array]:
-    """Finite-difference the diagonal Jacobian terms without Hutchinson sampling."""
+    """Estimate div v(x,t,o) with Rademacher Hutchinson probes."""
+
+    if num_samples <= 0:
+        raise ValueError(f"num_samples must be positive, got {num_samples}")
 
     x = jnp.asarray(x, dtype=jnp.float32)
-    fd_eps = jnp.asarray(fd_eps, dtype=jnp.float32)
-    velocity = predict_velocity_with_context(model, context, x, t).astype(jnp.float32)
-    batch_size = x.shape[0]
-    event_size = int(np.prod(x.shape[1:]))
-    flat_shape = (batch_size, event_size)
-    velocity_flat = velocity.reshape(flat_shape)
 
-    def scan_body(trace: jax.Array, index: jax.Array) -> tuple[jax.Array, None]:
-        direction = jax.nn.one_hot(index, event_size, dtype=jnp.float32)
-        direction_x = jnp.broadcast_to(direction.reshape((1, *x.shape[1:])), x.shape)
-        velocity_eps = predict_velocity_with_context(model, context, x + fd_eps * direction_x, t).astype(jnp.float32)
-        diagonal = (velocity_eps.reshape(flat_shape)[:, index] - velocity_flat[:, index]) / fd_eps
-        return trace + diagonal, None
+    def velocity_fn(x_arg: jax.Array) -> jax.Array:
+        return predict_velocity_with_context(model, context, x_arg, t).astype(jnp.float32)
 
-    trace0 = jnp.zeros((batch_size,), dtype=jnp.float32)
-    trace, _ = jax.lax.scan(scan_body, trace0, jnp.arange(event_size, dtype=jnp.int32))
+    event_axes = tuple(range(1, x.ndim))
+    sample_keys = jax.random.split(rng_key, num_samples)
+
+    def scan_body(carry, key: jax.Array):
+        trace, velocity = carry
+        probe = jax.random.rademacher(key, (1, *x.shape[1:]), dtype=jnp.float32)
+        probe = jnp.broadcast_to(probe, x.shape)
+        velocity, tangent_out = jax.jvp(velocity_fn, (x,), (probe,))
+        trace_estimate = jnp.sum(probe * tangent_out, axis=event_axes)
+        return (trace + trace_estimate, velocity), None
+
+    trace0 = jnp.zeros((x.shape[0],), dtype=jnp.float32)
+    velocity0 = jnp.zeros_like(x)
+    (trace, velocity), _ = jax.lax.scan(scan_body, (trace0, velocity0), sample_keys)
+    trace = trace / jnp.asarray(num_samples, dtype=jnp.float32)
     return velocity, trace
 
 
@@ -143,15 +207,32 @@ def standard_normal_log_prob(x: jax.Array) -> jax.Array:
     return -0.5 * (jnp.sum(jnp.square(x), axis=event_dims) + event_size * jnp.log(2.0 * jnp.pi))
 
 
-def integrate_to_base_log_likelihood(
+def _stack_observations(*observations: _model.Observation) -> _model.Observation:
+    return jax.tree.map(
+        lambda *xs: None if xs[0] is None else jnp.concatenate([jnp.asarray(x)[None, ...] for x in xs], axis=0),
+        *observations,
+    )
+
+
+def _select_batch_result(result: LikelihoodIntegrationResult, index: int) -> LikelihoodIntegrationResult:
+    return LikelihoodIntegrationResult(
+        x_base=result.x_base[index : index + 1],
+        r_tot=result.r_tot[index : index + 1],
+        log_p_base=result.log_p_base[index : index + 1],
+        log_likelihood=result.log_likelihood[index : index + 1],
+    )
+
+
+def integrate_batched_to_base_log_likelihood(
     model: _model.BaseModel,
     observation: _model.Observation,
     reference_actions: jax.Array,
     *,
     num_steps: int,
-    fd_eps: float = DEFAULT_FD_EPS,
+    hutchinson_samples: int = DEFAULT_HUTCHINSON_SAMPLES,
+    hutchinson_seed: int = DEFAULT_HUTCHINSON_SEED,
 ) -> LikelihoodIntegrationResult:
-    """Integrate pi0 code-time from actions at t=0 to base noise at t=1.
+    """Integrate batched pi0 code-time from actions at t=0 to base noise at t=1.
 
     In policy/src/openpi/models/pi0.py:
       x_t = t * noise + (1 - t) * actions
@@ -164,30 +245,25 @@ def integrate_to_base_log_likelihood(
 
     if num_steps <= 0:
         raise ValueError(f"num_steps must be positive, got {num_steps}")
+    if hutchinson_samples <= 0:
+        raise ValueError(f"hutchinson_samples must be positive, got {hutchinson_samples}")
 
     x = jnp.asarray(reference_actions, dtype=jnp.float32)
     if x.ndim == 2:
         x = x[None, ...]
-    observation = _add_batch_dim(observation)
 
     batch_size = x.shape[0]
-    dt = jnp.asarray(1.0 / num_steps, dtype=jnp.float32)
     context = create_velocity_context(model, observation)
-    step_indices = jnp.arange(num_steps, dtype=jnp.float32)
+    step_indices = jnp.arange(num_steps, dtype=jnp.int32)
 
-    def scan_body(carry, _):
-        x, r_tot, t = carry
-        velocity, divergence = velocity_and_fd_coordinate_trace(model, context, x, t, fd_eps)
-        return (x + velocity * dt, r_tot + divergence * dt, t + dt), None
-
-    @jax.jit
-    def run_scan(x, step_indices):
-        t = jnp.zeros((batch_size,), dtype=jnp.float32)
-        r_tot = jnp.zeros((batch_size,), dtype=jnp.float32)
-        (x, r_tot, _), _ = jax.lax.scan(scan_body, (x, r_tot, t), step_indices)
-        return x, r_tot
-
-    x, r_tot = run_scan(x, step_indices)
+    run_scan = _get_likelihood_scan(
+        model,
+        batch_size=batch_size,
+        num_steps=num_steps,
+        hutchinson_samples=hutchinson_samples,
+        hutchinson_seed=hutchinson_seed,
+    )
+    x, r_tot = run_scan(context, x, step_indices)
 
     log_p_base = standard_normal_log_prob(x)
     log_likelihood = log_p_base + r_tot
@@ -199,6 +275,25 @@ def integrate_to_base_log_likelihood(
     )
 
 
+def integrate_to_base_log_likelihood(
+    model: _model.BaseModel,
+    observation: _model.Observation,
+    reference_actions: jax.Array,
+    *,
+    num_steps: int,
+    hutchinson_samples: int = DEFAULT_HUTCHINSON_SAMPLES,
+    hutchinson_seed: int = DEFAULT_HUTCHINSON_SEED,
+) -> LikelihoodIntegrationResult:
+    return integrate_batched_to_base_log_likelihood(
+        model,
+        _add_batch_dim(observation),
+        reference_actions,
+        num_steps=num_steps,
+        hutchinson_samples=hutchinson_samples,
+        hutchinson_seed=hutchinson_seed,
+    )
+
+
 def compute_modality_contribution(
     model: _model.BaseModel,
     observation: _model.Observation,
@@ -206,7 +301,8 @@ def compute_modality_contribution(
     *,
     modality: str,
     num_steps: int,
-    fd_eps: float = DEFAULT_FD_EPS,
+    hutchinson_samples: int = DEFAULT_HUTCHINSON_SAMPLES,
+    hutchinson_seed: int = DEFAULT_HUTCHINSON_SEED,
     prompt: str | None = None,
     prompt_tokenizer: _tokenizer.PaligemmaTokenizer | None = None,
     state_in_prompt: bool = False,
@@ -218,22 +314,110 @@ def compute_modality_contribution(
         prompt_tokenizer=prompt_tokenizer,
         state_in_prompt=state_in_prompt,
     )
-    original_result = integrate_to_base_log_likelihood(
-        model,
-        observation,
-        reference_actions,
-        num_steps=num_steps,
-        fd_eps=fd_eps,
+    batched_observation = _stack_observations(observation, ablated_observation)
+    batched_actions = jnp.stack(
+        [
+            jnp.asarray(reference_actions, dtype=jnp.float32),
+            jnp.asarray(reference_actions, dtype=jnp.float32),
+        ],
+        axis=0,
     )
-    ablated_result = integrate_to_base_log_likelihood(
+    batched_result = integrate_batched_to_base_log_likelihood(
         model,
-        ablated_observation,
-        reference_actions,
+        batched_observation,
+        batched_actions,
         num_steps=num_steps,
-        fd_eps=fd_eps,
+        hutchinson_samples=hutchinson_samples,
+        hutchinson_seed=hutchinson_seed,
     )
+    original_result = _select_batch_result(batched_result, 0)
+    ablated_result = _select_batch_result(batched_result, 1)
     contribution = original_result.log_likelihood - ablated_result.log_likelihood
     return original_result, ablated_result, contribution
+
+
+def compute_episode_modality_contributions(
+    model: _model.BaseModel,
+    frames: Sequence[int],
+    dataset_indices: Sequence[int],
+    observations: Sequence[_model.Observation],
+    reference_actions: Sequence[jax.Array],
+    prompts: Sequence[str | None],
+    *,
+    modality: str,
+    num_steps: int,
+    hutchinson_samples: int = DEFAULT_HUTCHINSON_SAMPLES,
+    hutchinson_seed: int = DEFAULT_HUTCHINSON_SEED,
+    prompt_tokenizer: _tokenizer.PaligemmaTokenizer | None = None,
+    state_in_prompt: bool = False,
+    eval_batch_size: int = 4,
+) -> list[dict[str, float | int]]:
+    """Compute contribution rows in frame chunks to reduce repeated compilation/dispatch."""
+
+    if eval_batch_size <= 0:
+        raise ValueError(f"eval_batch_size must be positive, got {eval_batch_size}")
+
+    rows: list[dict[str, float | int]] = []
+    total_frames = len(frames)
+    for start in range(0, total_frames, eval_batch_size):
+        stop = min(start + eval_batch_size, total_frames)
+        chunk_observations = observations[start:stop]
+        chunk_actions = reference_actions[start:stop]
+        chunk_prompts = prompts[start:stop]
+
+        batched_observations = []
+        batched_actions = []
+        for observation, actions, prompt in zip(chunk_observations, chunk_actions, chunk_prompts, strict=True):
+            ablated_observation = ablate_modality_observation(
+                observation,
+                modality=modality,
+                prompt=prompt,
+                prompt_tokenizer=prompt_tokenizer,
+                state_in_prompt=state_in_prompt,
+            )
+            batched_observations.extend((observation, ablated_observation))
+            action = jnp.asarray(actions, dtype=jnp.float32)
+            batched_actions.extend((action, action))
+
+        batched_result = integrate_batched_to_base_log_likelihood(
+            model,
+            _stack_observations(*batched_observations),
+            jnp.stack(batched_actions, axis=0),
+            num_steps=num_steps,
+            hutchinson_samples=hutchinson_samples,
+            hutchinson_seed=hutchinson_seed,
+        )
+
+        for chunk_offset, (frame, dataset_index) in enumerate(
+            zip(frames[start:stop], dataset_indices[start:stop], strict=True)
+        ):
+            original_index = 2 * chunk_offset
+            ablated_index = original_index + 1
+            row = {
+                "frame": int(frame),
+                "dataset_index": int(dataset_index),
+                "original_log_likelihood": _scalar(batched_result.log_likelihood[original_index]),
+                "ablated_log_likelihood": _scalar(batched_result.log_likelihood[ablated_index]),
+                "original_r_tot": _scalar(batched_result.r_tot[original_index]),
+                "ablated_r_tot": _scalar(batched_result.r_tot[ablated_index]),
+                "delta_logp": _scalar(
+                    batched_result.log_p_base[original_index] - batched_result.log_p_base[ablated_index]
+                ),
+                "delta_r_tot": _scalar(batched_result.r_tot[original_index] - batched_result.r_tot[ablated_index]),
+                "contribution": _scalar(
+                    batched_result.log_likelihood[original_index] - batched_result.log_likelihood[ablated_index]
+                ),
+            }
+            rows.append(row)
+            print(
+                f"frame={row['frame']} dataset_index={row['dataset_index']} "
+                f"original_log_likelihood={row['original_log_likelihood']:.6f} "
+                f"ablated_log_likelihood={row['ablated_log_likelihood']:.6f} "
+                f"delta_logp(x_base)={row['delta_logp']:.6f} "
+                f"delta_r_tot={row['delta_r_tot']:.6f}"
+            )
+
+    return rows
 
 
 def save_contribution_curve(
@@ -297,13 +481,35 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--checkpoint-dir", default="/home/rvsa/codehub/ManiSkill-vitac/checkpoints/11999")
     parser.add_argument("--episode-index", default=10)
     parser.add_argument("--frame", type=int, default=0)
+    parser.add_argument("--max-frames", type=int, default=1000)
     parser.add_argument("--sample-interval", type=int, default=3)
-    parser.add_argument("--num-steps", "-k", type=int, default=10)
-    parser.add_argument("--fd-eps", type=float, default=DEFAULT_FD_EPS, help="Finite-difference step for divergence.")
-    parser.add_argument("--remove-modality", choices=("vision", "tactile", "state", "language_prompt"), default="state")
-    parser.add_argument("--max-frames", type=int, default=1)
+    parser.add_argument("--num-steps", "-k", type=int, default=120)
+    parser.add_argument(
+        "--eval-batch-size",
+        type=int,
+        default=4,
+        help="Number of episode frames to integrate per batch. Actual model batch is twice this value.",
+    )
+    parser.add_argument(
+        "--hutchinson-samples",
+        type=int,
+        default=DEFAULT_HUTCHINSON_SAMPLES,
+        help="Number of Hutchinson probes per Euler step.",
+    )
+    parser.add_argument(
+        "--hutchinson-seed",
+        type=int,
+        default=DEFAULT_HUTCHINSON_SEED,
+        help="Random seed for Hutchinson probes.",
+    )
+    parser.add_argument("--remove-modality", choices=("vision", "tactile", "state", "language_prompt"), default="vision")
     parser.add_argument("--output-dir", type=pathlib.Path, default=pathlib.Path("eval_outputs/loglike"))
     args = parser.parse_args(argv)
+
+    if args.hutchinson_samples <= 0:
+        raise ValueError(f"--hutchinson-samples must be positive, got {args.hutchinson_samples}.")
+    if args.eval_batch_size <= 0:
+        raise ValueError(f"--eval-batch-size must be positive, got {args.eval_batch_size}.")
 
     train_config = _config.get_config(args.config_name)
     if args.sample_interval is None:
@@ -336,45 +542,28 @@ def main(argv: Sequence[str] | None = None) -> None:
     print(f"ablated_modality={args.remove_modality}")
     print("ablation_method=attention_mask")
     print(f"state_in_prompt={state_in_prompt}")
-    print("divergence_method=fd_coordinate_trace")
-    print(f"fd_eps={args.fd_eps:g}")
+    print("divergence_method=hutchinson_rademacher_jvp")
+    print(f"hutchinson_samples={args.hutchinson_samples}")
+    print(f"hutchinson_seed={args.hutchinson_seed}")
+    print(f"eval_batch_size={args.eval_batch_size}")
     print("ode_solver=euler")
     print("model_dtype=bfloat16")
 
-    rows = []
-    for i, (frame, dataset_index, observation, reference_actions, prompt) in enumerate(
-        zip(episode.frames, episode.indices, episode.observations, episode.actions, episode.prompts, strict=True)
-    ):
-        original_result, ablated_result, contribution = compute_modality_contribution(
-            model,
-            observation,
-            reference_actions,
-            modality=args.remove_modality,
-            num_steps=args.num_steps,
-            prompt=prompt,
-            prompt_tokenizer=prompt_tokenizer,
-            state_in_prompt=state_in_prompt,
-            fd_eps=args.fd_eps,
-        )
-        row = {
-            "frame": int(frame),
-            "dataset_index": int(dataset_index),
-            "original_log_likelihood": _scalar(original_result.log_likelihood),
-            "ablated_log_likelihood": _scalar(ablated_result.log_likelihood),
-            "original_r_tot": _scalar(original_result.r_tot),
-            "ablated_r_tot": _scalar(ablated_result.r_tot),
-            "delta_logp": _scalar(original_result.log_p_base - ablated_result.log_p_base),
-            "delta_r_tot": _scalar(original_result.r_tot - ablated_result.r_tot),
-            "contribution": _scalar(contribution),
-        }
-        rows.append(row)
-        print(
-            f"frame={row['frame']} dataset_index={row['dataset_index']} "
-            f"original_log_likelihood={row['original_log_likelihood']:.6f} "
-            f"ablated_log_likelihood={row['ablated_log_likelihood']:.6f} "
-            f"delta_logp(x_base)={row['delta_logp']:.6f} "
-            f"delta_r_tot={row['delta_r_tot']:.6f}"
-        )
+    rows = compute_episode_modality_contributions(
+        model,
+        episode.frames,
+        episode.indices,
+        episode.observations,
+        episode.actions,
+        episode.prompts,
+        modality=args.remove_modality,
+        num_steps=args.num_steps,
+        prompt_tokenizer=prompt_tokenizer,
+        state_in_prompt=state_in_prompt,
+        hutchinson_samples=args.hutchinson_samples,
+        hutchinson_seed=args.hutchinson_seed,
+        eval_batch_size=args.eval_batch_size,
+    )
 
     if args.sample_interval is not None:
         csv_path, plot_path = save_contribution_curve(

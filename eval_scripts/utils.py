@@ -221,7 +221,7 @@ def load_episode(
         transformed = _normalize_observation_dict(transformed)
         raw_samples.append(raw)
         observations.append(_model.Observation.from_dict(transformed))
-        actions.append(jnp.asarray(transformed["actions"]))
+        actions.append(np.asarray(transformed["actions"], dtype=np.float32))
         prompts.append(_prompt_from_raw(raw))
 
     return EpisodeData(
